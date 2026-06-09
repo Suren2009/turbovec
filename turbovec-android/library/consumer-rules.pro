@@ -1,0 +1,2 @@
+-keep class com.turbovec.android.TurboVecIndex { *; }
+-keep class com.turbovec.android.TurboVecIndex$SearchResult { *; }

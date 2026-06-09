@@ -201,6 +201,21 @@ cargo build --release
 
 All x86_64 builds target `x86-64-v3` (AVX2 baseline, Haswell 2013+) via `.cargo/config.toml`. Any CPU that can run the AVX2 fallback kernel can run the whole crate — the AVX-512 kernel is gated at runtime via `is_x86_feature_detected!` and only kicks in on hardware that supports it.
 
+### Android AAR (arm64-v8a)
+
+The Android library project lives in [`turbovec-android/`](turbovec-android/).
+It builds an AAR that packages the Rust JNI bridge as `libturbovec_jni.so` for
+`arm64-v8a`:
+
+```bash
+cd turbovec-android
+rustup target add aarch64-linux-android
+gradle :library:assembleRelease
+```
+
+See [`turbovec-android/README.md`](turbovec-android/README.md) for Android SDK /
+NDK prerequisites, app integration, and Java usage examples.
+
 ## Running benchmarks
 
 Download datasets:

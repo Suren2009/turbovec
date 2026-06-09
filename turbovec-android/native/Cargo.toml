@@ -1,0 +1,17 @@
+[package]
+name = "turbovec-android-jni"
+version = "0.8.0"
+edition = "2021"
+rust-version = "1.70"
+publish = false
+
+[lib]
+name = "turbovec_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Keep the standalone Android lockfile on the same pre-edition-2024 transitive
+# version used by the root workspace until the repository's toolchain is bumped.
+generativity = "=1.1.0"
+jni = "0.21.1"
+turbovec-core = { package = "turbovec", path = "../../turbovec" }

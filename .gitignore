@@ -9,5 +9,9 @@ __pycache__/
 *.npy
 codebooks.npz
 target/
+.gradle/
+build/
+turbovec-android/.gradle/
+turbovec-android/**/build/
 evolve/
 evolve_rust/
