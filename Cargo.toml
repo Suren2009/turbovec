@@ -3,7 +3,7 @@ members = ["turbovec", "turbovec-python"]
 # Standalone smoke test crate that lives outside the workspace on purpose —
 # it must mimic a real downstream `cargo add turbovec` user (no inherited
 # workspace settings, no shared lockfile).
-exclude = ["examples/downstream-smoke"]
+exclude = ["examples/downstream-smoke", "turbovec-android/native"]
 resolver = "2"
 
 [profile.release]
