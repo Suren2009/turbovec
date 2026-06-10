@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "turbovec-android"
 include(":library")
+include(":app")

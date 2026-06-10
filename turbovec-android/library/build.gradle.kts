@@ -1,4 +1,5 @@
 import java.util.Locale
+import java.util.Properties
 
 plugins {
     id("com.android.library")
@@ -9,7 +10,7 @@ val rustTarget = "aarch64-linux-android"
 val rustAbi = "arm64-v8a"
 val rustLibraryName = "libturbovec_jni.so"
 val nativeDir = rootProject.layout.projectDirectory.dir("native")
-val generatedJniLibsDir = layout.buildDirectory.dir("generated/jniLibs")
+val generatedJniLibsDir = layout.buildDirectory.get().asFile.resolve("generated/jniLibs")
 
 fun androidNdkHostTag(): String {
     val os = System.getProperty("os.name").lowercase(Locale.US)
@@ -40,7 +41,11 @@ android {
         consumerProguardFiles("consumer-rules.pro")
     }
 
-    sourceSets["main"].jniLibs.srcDir(generatedJniLibsDir)
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs(generatedJniLibsDir)
+        }
+    }
 }
 
 val cargoBuildArm64 by tasks.registering(Exec::class) {
@@ -55,7 +60,29 @@ val cargoBuildArm64 by tasks.registering(Exec::class) {
     outputs.file(nativeDir.file("target/$rustTarget/release/$rustLibraryName"))
 
     doFirst {
-        val ndkDir = android.ndkDirectory
+        val properties = Properties()
+        val localPropertiesFile = project.rootProject.file("local.properties")
+        if (localPropertiesFile.exists()) {
+            val stream = localPropertiesFile.inputStream()
+            try {
+                properties.load(stream)
+            } finally {
+                stream.close()
+            }
+        }
+        val sdkDirStr = properties.getProperty("sdk.dir") ?: "C:/Users/suren/AppData/Local/Android/Sdk"
+        val sdkDir = file(sdkDirStr)
+
+        val ndkVersions = listOf("27.2.12479018", "29.0.13113456")
+        var ndkDir = sdkDir.resolve("ndk/${ndkVersions[0]}")
+        for (ver in ndkVersions) {
+            val potentialDir = sdkDir.resolve("ndk/$ver")
+            if (potentialDir.isDirectory) {
+                ndkDir = potentialDir
+                break
+            }
+        }
+
         val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/${androidNdkHostTag()}/bin")
         val linker = toolchainBin.resolve(ndkToolName("aarch64-linux-android${minAndroidApi}-clang"))
         val archiver = toolchainBin.resolve(ndkToolName("llvm-ar"))
@@ -71,6 +98,7 @@ val cargoBuildArm64 by tasks.registering(Exec::class) {
         environment("ANDROID_NDK_ROOT", ndkDir.absolutePath)
         environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", linker.absolutePath)
         environment("AR_aarch64_linux_android", archiver.absolutePath)
+        environment("RUSTFLAGS", "-C link-arg=-Wl,-z,max-page-size=16384")
     }
 }
 
@@ -80,7 +108,7 @@ val syncRustJniLibs by tasks.registering(Copy::class) {
 
     dependsOn(cargoBuildArm64)
     from(nativeDir.file("target/$rustTarget/release/$rustLibraryName"))
-    into(generatedJniLibsDir.map { it.dir(rustAbi) })
+    into(generatedJniLibsDir.resolve(rustAbi))
 }
 
 tasks.named("preBuild") {
