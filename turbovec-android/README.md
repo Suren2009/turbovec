@@ -10,6 +10,9 @@ the core positional `TurboQuantIndex` operations for Android apps.
 - Native library: `libturbovec_jni.so`
 - ABI: `arm64-v8a` only
 - Minimum Android API: 23
+- Quantization widths: 2, 3, 4, 8, or 16 bits per coordinate. The 8-bit and
+  16-bit modes are experimental scalar fallback paths intended for evaluation;
+  2/3/4-bit modes use the optimized mobile search kernels.
 
 ## Prerequisites
 
@@ -100,6 +103,13 @@ try (TurboVecIndex index = new TurboVecIndex(1536, 4)) {
 
     index.write(context.getFilesDir() + "/index.tv");
 }
+```
+
+Choose the quantization width in the constructor (or `TurboVecIndex.lazy(width)`):
+
+```java
+TurboVecIndex eightBit = new TurboVecIndex(1536, 8);
+TurboVecIndex sixteenBit = new TurboVecIndex(1536, 16);
 ```
 
 Load a persisted index:

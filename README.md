@@ -214,7 +214,8 @@ gradle :library:assembleRelease
 ```
 
 See [`turbovec-android/README.md`](turbovec-android/README.md) for Android SDK /
-NDK prerequisites, app integration, and Java usage examples.
+NDK prerequisites, app integration, Java usage examples, and the supported AAR
+quantization widths (2, 3, 4, plus experimental 8 and 16).
 
 ## Running benchmarks
 

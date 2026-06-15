@@ -7,8 +7,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rayon::prelude::*;
 use crate::{BLOCK, FLUSH_EVERY};
+use rayon::prelude::*;
 
 /// Cumulative count of 32-vector blocks short-circuited by the mask
 /// early-exit path. Incremented atomically by [`block_has_allowed`]
@@ -81,8 +81,14 @@ unsafe fn score_4bit_block_neon(
                 let lut_lo = vld1q_u8(lp.add(16));
                 let c0 = vld1q_u8(cp);
                 let c1 = vld1q_u8(cp.add(16));
-                let s0 = vaddq_u8(vqtbl1q_u8(lut_lo, vandq_u8(c0, mask)), vqtbl1q_u8(lut_hi, vshrq_n_u8(c0, 4)));
-                let s1 = vaddq_u8(vqtbl1q_u8(lut_lo, vandq_u8(c1, mask)), vqtbl1q_u8(lut_hi, vshrq_n_u8(c1, 4)));
+                let s0 = vaddq_u8(
+                    vqtbl1q_u8(lut_lo, vandq_u8(c0, mask)),
+                    vqtbl1q_u8(lut_hi, vshrq_n_u8(c0, 4)),
+                );
+                let s1 = vaddq_u8(
+                    vqtbl1q_u8(lut_lo, vandq_u8(c1, mask)),
+                    vqtbl1q_u8(lut_hi, vshrq_n_u8(c1, 4)),
+                );
                 accum[0] = vaddw_u8(accum[0], vget_low_u8(s0));
                 accum[1] = vaddw_u8(accum[1], vget_high_u8(s0));
                 accum[2] = vaddw_u8(accum[2], vget_low_u8(s1));
@@ -99,10 +105,14 @@ unsafe fn score_4bit_block_neon(
             let cp = codes_base.add(g * BLOCK);
             let c0 = vld1q_u8(cp);
             let c1 = vld1q_u8(cp.add(16));
-            let s0 = vaddq_u8(vqtbl1q_u8(lut_lo, vandq_u8(c0, mask)),
-                              vqtbl1q_u8(lut_hi, vshrq_n_u8(c0, 4)));
-            let s1 = vaddq_u8(vqtbl1q_u8(lut_lo, vandq_u8(c1, mask)),
-                              vqtbl1q_u8(lut_hi, vshrq_n_u8(c1, 4)));
+            let s0 = vaddq_u8(
+                vqtbl1q_u8(lut_lo, vandq_u8(c0, mask)),
+                vqtbl1q_u8(lut_hi, vshrq_n_u8(c0, 4)),
+            );
+            let s1 = vaddq_u8(
+                vqtbl1q_u8(lut_lo, vandq_u8(c1, mask)),
+                vqtbl1q_u8(lut_hi, vshrq_n_u8(c1, 4)),
+            );
             accum[0] = vaddw_u8(accum[0], vget_low_u8(s0));
             accum[1] = vaddw_u8(accum[1], vget_high_u8(s0));
             accum[2] = vaddw_u8(accum[2], vget_low_u8(s1));
@@ -260,9 +270,11 @@ unsafe fn search_multi_query_avx2(
                 );
 
                 let f0 = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(dis0)));
-                let f1 = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256(dis0, 1)));
+                let f1 =
+                    _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256(dis0, 1)));
                 let f2 = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(dis1)));
-                let f3 = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256(dis1, 1)));
+                let f3 =
+                    _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm256_extracti128_si256(dis1, 1)));
 
                 fa[qi][0] = _mm256_fmadd_ps(v_scales[qi], f0, fa[qi][0]);
                 fa[qi][1] = _mm256_fmadd_ps(v_scales[qi], f1, fa[qi][1]);
@@ -310,7 +322,9 @@ unsafe fn search_multi_query_avx2(
             if *sz < k {
                 for lane in 0..(end - base_vec) {
                     if let Some(m) = mask {
-                        if !mask_allows(m, base_vec + lane) { continue; }
+                        if !mask_allows(m, base_vec + lane) {
+                            continue;
+                        }
                     }
                     let score = block_out[lane];
                     if *sz < k {
@@ -318,17 +332,25 @@ unsafe fn search_multi_query_avx2(
                         hi[*sz] = (base_vec + lane) as u32;
                         *sz += 1;
                         if *sz == k {
-                            *hmin = hs[0]; *hmi = 0;
+                            *hmin = hs[0];
+                            *hmi = 0;
                             for h in 1..k {
-                                if hs[h] < *hmin { *hmin = hs[h]; *hmi = h; }
+                                if hs[h] < *hmin {
+                                    *hmin = hs[h];
+                                    *hmi = h;
+                                }
                             }
                         }
                     } else if score > *hmin {
                         hs[*hmi] = score;
                         hi[*hmi] = (base_vec + lane) as u32;
-                        *hmin = hs[0]; *hmi = 0;
+                        *hmin = hs[0];
+                        *hmi = 0;
                         for h in 1..k {
-                            if hs[h] < *hmin { *hmin = hs[h]; *hmi = h; }
+                            if hs[h] < *hmin {
+                                *hmin = hs[h];
+                                *hmi = h;
+                            }
                         }
                     }
                 }
@@ -336,15 +358,21 @@ unsafe fn search_multi_query_avx2(
                 let v_hmin = _mm256_set1_ps(*hmin);
                 for chunk in 0..4 {
                     let chunk_start = chunk * 8;
-                    if chunk_start >= end - base_vec { break; }
+                    if chunk_start >= end - base_vec {
+                        break;
+                    }
                     let scores_v = _mm256_loadu_ps(block_out.as_ptr().add(chunk_start));
                     let cmp = _mm256_cmp_ps(scores_v, v_hmin, _CMP_GT_OQ);
-                    if _mm256_movemask_ps(cmp) == 0 { continue; }
+                    if _mm256_movemask_ps(cmp) == 0 {
+                        continue;
+                    }
 
                     let chunk_end = (chunk_start + 8).min(end - base_vec);
                     for lane in chunk_start..chunk_end {
                         if let Some(m) = mask {
-                            if !mask_allows(m, base_vec + lane) { continue; }
+                            if !mask_allows(m, base_vec + lane) {
+                                continue;
+                            }
                         }
                         let score = block_out[lane];
                         if score > *hmin {
@@ -352,7 +380,9 @@ unsafe fn search_multi_query_avx2(
                             hi[*hmi] = (base_vec + lane) as u32;
                             *hmi = 0;
                             for h in 1..k {
-                                if hs[h] < hs[*hmi] { *hmi = h; }
+                                if hs[h] < hs[*hmi] {
+                                    *hmi = h;
+                                }
                             }
                             *hmin = hs[*hmi];
                         }
@@ -385,7 +415,12 @@ unsafe fn search_multi_query_avx2(
 // inlined AVX2 inner-loop body at the end. Avoids any masked AVX-512 logic.
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "fma", enable = "avx512f", enable = "avx512bw")]
+#[target_feature(
+    enable = "avx2",
+    enable = "fma",
+    enable = "avx512f",
+    enable = "avx512bw"
+)]
 unsafe fn search_multi_query_avx512bw(
     blocked_codes: &[u8],
     luts: &[&[u8]],
@@ -497,12 +532,12 @@ unsafe fn search_multi_query_avx512bw(
                 let chi_b = _mm512_and_si512(_mm512_srli_epi16(codes_b, 4), mask512);
 
                 for qi in 0..4 {
-                    let lut_a = _mm512_broadcast_i64x4(
-                        _mm256_loadu_si256(luts[qi].as_ptr().add(g0 * 32) as *const __m256i),
-                    );
-                    let lut_b = _mm512_broadcast_i64x4(
-                        _mm256_loadu_si256(luts[qi].as_ptr().add(g1 * 32) as *const __m256i),
-                    );
+                    let lut_a = _mm512_broadcast_i64x4(_mm256_loadu_si256(
+                        luts[qi].as_ptr().add(g0 * 32) as *const __m256i,
+                    ));
+                    let lut_b = _mm512_broadcast_i64x4(_mm256_loadu_si256(
+                        luts[qi].as_ptr().add(g1 * 32) as *const __m256i,
+                    ));
 
                     let res0_a = _mm512_shuffle_epi8(lut_a, clo_a);
                     let res1_a = _mm512_shuffle_epi8(lut_a, chi_a);
@@ -512,12 +547,18 @@ unsafe fn search_multi_query_avx512bw(
                     accus[qi][0] = _mm512_add_epi16(accus[qi][0], _mm512_add_epi16(res0_a, res0_b));
                     accus[qi][1] = _mm512_add_epi16(
                         accus[qi][1],
-                        _mm512_add_epi16(_mm512_srli_epi16(res0_a, 8), _mm512_srli_epi16(res0_b, 8)),
+                        _mm512_add_epi16(
+                            _mm512_srli_epi16(res0_a, 8),
+                            _mm512_srli_epi16(res0_b, 8),
+                        ),
                     );
                     accus[qi][2] = _mm512_add_epi16(accus[qi][2], _mm512_add_epi16(res1_a, res1_b));
                     accus[qi][3] = _mm512_add_epi16(
                         accus[qi][3],
-                        _mm512_add_epi16(_mm512_srli_epi16(res1_a, 8), _mm512_srli_epi16(res1_b, 8)),
+                        _mm512_add_epi16(
+                            _mm512_srli_epi16(res1_a, 8),
+                            _mm512_srli_epi16(res1_b, 8),
+                        ),
                     );
                 }
             }
@@ -533,11 +574,8 @@ unsafe fn search_multi_query_avx512bw(
                     let cp1 = codes_base.add((b1 * n_byte_groups + g) * BLOCK);
                     let codes_low = _mm256_loadu_si256(cp0 as *const __m256i);
                     let codes_high = _mm256_loadu_si256(cp1 as *const __m256i);
-                    let codes_v = _mm512_inserti64x4(
-                        _mm512_castsi256_si512(codes_low),
-                        codes_high,
-                        1,
-                    );
+                    let codes_v =
+                        _mm512_inserti64x4(_mm512_castsi256_si512(codes_low), codes_high, 1);
                     let clo = _mm512_and_si512(codes_v, mask512);
                     let chi = _mm512_and_si512(_mm512_srli_epi16(codes_v, 4), mask512);
 
@@ -580,8 +618,12 @@ unsafe fn search_multi_query_avx512bw(
         for which_block in 0..2usize {
             let b = b0 + which_block;
             let base_vec = b * BLOCK;
-            if base_vec >= n_vectors { break; }
-            if !block_has_allowed(mask, base_vec) { continue; }
+            if base_vec >= n_vectors {
+                break;
+            }
+            if !block_has_allowed(mask, base_vec) {
+                continue;
+            }
             let end = (base_vec + BLOCK).min(n_vectors);
             let vec_scales_ptr = vec_scales.as_ptr().add(base_vec);
 
@@ -766,10 +808,18 @@ unsafe fn avx2_post_flush_heap_update(
         }
         let mut block_out = [0.0f32; BLOCK];
         let bp = block_out.as_mut_ptr();
-        if m0 != 0 { _mm256_storeu_ps(bp, s0); }
-        if m1 != 0 { _mm256_storeu_ps(bp.add(8), s1); }
-        if m2 != 0 { _mm256_storeu_ps(bp.add(16), s2); }
-        if m3 != 0 { _mm256_storeu_ps(bp.add(24), s3); }
+        if m0 != 0 {
+            _mm256_storeu_ps(bp, s0);
+        }
+        if m1 != 0 {
+            _mm256_storeu_ps(bp.add(8), s1);
+        }
+        if m2 != 0 {
+            _mm256_storeu_ps(bp.add(16), s2);
+        }
+        if m3 != 0 {
+            _mm256_storeu_ps(bp.add(24), s3);
+        }
 
         for (chunk, &mask0) in [m0, m1, m2, m3].iter().enumerate() {
             let mut m = mask0;
@@ -778,7 +828,9 @@ unsafe fn avx2_post_flush_heap_update(
                 m &= m - 1;
                 let lane = chunk * 8 + bit;
                 if let Some(am) = mask {
-                    if !mask_allows(am, base_vec + lane) { continue; }
+                    if !mask_allows(am, base_vec + lane) {
+                        continue;
+                    }
                 }
                 let score = block_out[lane];
                 if score > *hmin {
@@ -786,7 +838,9 @@ unsafe fn avx2_post_flush_heap_update(
                     hi[*hmi] = (base_vec + lane) as u32;
                     *hmi = 0;
                     for h in 1..k {
-                        if hs[h] < hs[*hmi] { *hmi = h; }
+                        if hs[h] < hs[*hmi] {
+                            *hmi = h;
+                        }
                     }
                     *hmin = hs[*hmi];
                 }
@@ -814,7 +868,9 @@ unsafe fn avx2_post_flush_heap_update(
     if *sz < k {
         for lane in 0..end_lane {
             if let Some(am) = mask {
-                if !mask_allows(am, base_vec + lane) { continue; }
+                if !mask_allows(am, base_vec + lane) {
+                    continue;
+                }
             }
             let score = block_out[lane];
             if *sz < k {
@@ -822,17 +878,25 @@ unsafe fn avx2_post_flush_heap_update(
                 hi[*sz] = (base_vec + lane) as u32;
                 *sz += 1;
                 if *sz == k {
-                    *hmin = hs[0]; *hmi = 0;
+                    *hmin = hs[0];
+                    *hmi = 0;
                     for h in 1..k {
-                        if hs[h] < *hmin { *hmin = hs[h]; *hmi = h; }
+                        if hs[h] < *hmin {
+                            *hmin = hs[h];
+                            *hmi = h;
+                        }
                     }
                 }
             } else if score > *hmin {
                 hs[*hmi] = score;
                 hi[*hmi] = (base_vec + lane) as u32;
-                *hmin = hs[0]; *hmi = 0;
+                *hmin = hs[0];
+                *hmi = 0;
                 for h in 1..k {
-                    if hs[h] < *hmin { *hmin = hs[h]; *hmi = h; }
+                    if hs[h] < *hmin {
+                        *hmin = hs[h];
+                        *hmi = h;
+                    }
                 }
             }
         }
@@ -840,15 +904,21 @@ unsafe fn avx2_post_flush_heap_update(
         let v_hmin = _mm256_set1_ps(*hmin);
         for chunk in 0..4 {
             let chunk_start = chunk * 8;
-            if chunk_start >= end_lane { break; }
+            if chunk_start >= end_lane {
+                break;
+            }
             let scores_v = _mm256_loadu_ps(block_out.as_ptr().add(chunk_start));
             let cmp = _mm256_cmp_ps(scores_v, v_hmin, _CMP_GT_OQ);
-            if _mm256_movemask_ps(cmp) == 0 { continue; }
+            if _mm256_movemask_ps(cmp) == 0 {
+                continue;
+            }
 
             let chunk_end = (chunk_start + 8).min(end_lane);
             for lane in chunk_start..chunk_end {
                 if let Some(am) = mask {
-                    if !mask_allows(am, base_vec + lane) { continue; }
+                    if !mask_allows(am, base_vec + lane) {
+                        continue;
+                    }
                 }
                 let score = block_out[lane];
                 if score > *hmin {
@@ -856,7 +926,9 @@ unsafe fn avx2_post_flush_heap_update(
                     hi[*hmi] = (base_vec + lane) as u32;
                     *hmi = 0;
                     for h in 1..k {
-                        if hs[h] < hs[*hmi] { *hmi = h; }
+                        if hs[h] < hs[*hmi] {
+                            *hmi = h;
+                        }
                     }
                     *hmin = hs[*hmi];
                 }
@@ -919,10 +991,22 @@ unsafe fn avx2_block_epilogue(
         let end_lane = end - base_vec;
         let (s0, s1, s2, s3) = if end_lane == BLOCK {
             (
-                _mm256_mul_ps(_mm256_fmadd_ps(v_scale, f0, v_bias), _mm256_loadu_ps(vec_scales_ptr)),
-                _mm256_mul_ps(_mm256_fmadd_ps(v_scale, f1, v_bias), _mm256_loadu_ps(vec_scales_ptr.add(8))),
-                _mm256_mul_ps(_mm256_fmadd_ps(v_scale, f2, v_bias), _mm256_loadu_ps(vec_scales_ptr.add(16))),
-                _mm256_mul_ps(_mm256_fmadd_ps(v_scale, f3, v_bias), _mm256_loadu_ps(vec_scales_ptr.add(24))),
+                _mm256_mul_ps(
+                    _mm256_fmadd_ps(v_scale, f0, v_bias),
+                    _mm256_loadu_ps(vec_scales_ptr),
+                ),
+                _mm256_mul_ps(
+                    _mm256_fmadd_ps(v_scale, f1, v_bias),
+                    _mm256_loadu_ps(vec_scales_ptr.add(8)),
+                ),
+                _mm256_mul_ps(
+                    _mm256_fmadd_ps(v_scale, f2, v_bias),
+                    _mm256_loadu_ps(vec_scales_ptr.add(16)),
+                ),
+                _mm256_mul_ps(
+                    _mm256_fmadd_ps(v_scale, f3, v_bias),
+                    _mm256_loadu_ps(vec_scales_ptr.add(24)),
+                ),
             )
         } else {
             (
@@ -956,10 +1040,18 @@ unsafe fn avx2_block_epilogue(
             // via ctz so non-hitting lanes aren't touched.
             let mut block_out = [0.0f32; BLOCK];
             let bp = block_out.as_mut_ptr();
-            if m0 != 0 { _mm256_storeu_ps(bp, s0); }
-            if m1 != 0 { _mm256_storeu_ps(bp.add(8), s1); }
-            if m2 != 0 { _mm256_storeu_ps(bp.add(16), s2); }
-            if m3 != 0 { _mm256_storeu_ps(bp.add(24), s3); }
+            if m0 != 0 {
+                _mm256_storeu_ps(bp, s0);
+            }
+            if m1 != 0 {
+                _mm256_storeu_ps(bp.add(8), s1);
+            }
+            if m2 != 0 {
+                _mm256_storeu_ps(bp.add(16), s2);
+            }
+            if m3 != 0 {
+                _mm256_storeu_ps(bp.add(24), s3);
+            }
 
             for (chunk, &mask0) in [m0, m1, m2, m3].iter().enumerate() {
                 let mut m = mask0;
@@ -968,7 +1060,9 @@ unsafe fn avx2_block_epilogue(
                     m &= m - 1;
                     let lane = chunk * 8 + bit;
                     if let Some(am) = mask {
-                        if !mask_allows(am, base_vec + lane) { continue; }
+                        if !mask_allows(am, base_vec + lane) {
+                            continue;
+                        }
                     }
                     let score = block_out[lane];
                     // Re-check: earlier lanes in this block may have raised
@@ -978,7 +1072,9 @@ unsafe fn avx2_block_epilogue(
                         hi[*hmi] = (base_vec + lane) as u32;
                         *hmi = 0;
                         for h in 1..k {
-                            if hs[h] < hs[*hmi] { *hmi = h; }
+                            if hs[h] < hs[*hmi] {
+                                *hmi = h;
+                            }
                         }
                         *hmin = hs[*hmi];
                     }
@@ -1009,7 +1105,9 @@ unsafe fn avx2_block_epilogue(
         if *sz < k {
             for lane in 0..end_lane {
                 if let Some(am) = mask {
-                    if !mask_allows(am, base_vec + lane) { continue; }
+                    if !mask_allows(am, base_vec + lane) {
+                        continue;
+                    }
                 }
                 let score = block_out[lane];
                 if *sz < k {
@@ -1017,17 +1115,25 @@ unsafe fn avx2_block_epilogue(
                     hi[*sz] = (base_vec + lane) as u32;
                     *sz += 1;
                     if *sz == k {
-                        *hmin = hs[0]; *hmi = 0;
+                        *hmin = hs[0];
+                        *hmi = 0;
                         for h in 1..k {
-                            if hs[h] < *hmin { *hmin = hs[h]; *hmi = h; }
+                            if hs[h] < *hmin {
+                                *hmin = hs[h];
+                                *hmi = h;
+                            }
                         }
                     }
                 } else if score > *hmin {
                     hs[*hmi] = score;
                     hi[*hmi] = (base_vec + lane) as u32;
-                    *hmin = hs[0]; *hmi = 0;
+                    *hmin = hs[0];
+                    *hmi = 0;
                     for h in 1..k {
-                        if hs[h] < *hmin { *hmin = hs[h]; *hmi = h; }
+                        if hs[h] < *hmin {
+                            *hmin = hs[h];
+                            *hmi = h;
+                        }
                     }
                 }
             }
@@ -1035,15 +1141,21 @@ unsafe fn avx2_block_epilogue(
             let v_hmin = _mm256_set1_ps(*hmin);
             for chunk in 0..4 {
                 let chunk_start = chunk * 8;
-                if chunk_start >= end_lane { break; }
+                if chunk_start >= end_lane {
+                    break;
+                }
                 let scores_v = _mm256_loadu_ps(block_out.as_ptr().add(chunk_start));
                 let cmp = _mm256_cmp_ps(scores_v, v_hmin, _CMP_GT_OQ);
-                if _mm256_movemask_ps(cmp) == 0 { continue; }
+                if _mm256_movemask_ps(cmp) == 0 {
+                    continue;
+                }
 
                 let chunk_end = (chunk_start + 8).min(end_lane);
                 for lane in chunk_start..chunk_end {
                     if let Some(am) = mask {
-                        if !mask_allows(am, base_vec + lane) { continue; }
+                        if !mask_allows(am, base_vec + lane) {
+                            continue;
+                        }
                     }
                     let score = block_out[lane];
                     if score > *hmin {
@@ -1051,7 +1163,9 @@ unsafe fn avx2_block_epilogue(
                         hi[*hmi] = (base_vec + lane) as u32;
                         *hmi = 0;
                         for h in 1..k {
-                            if hs[h] < hs[*hmi] { *hmi = h; }
+                            if hs[h] < hs[*hmi] {
+                                *hmi = h;
+                            }
                         }
                         *hmin = hs[*hmi];
                     }
@@ -1163,13 +1277,12 @@ unsafe fn score_4query_block_neon(
 /// Per-query nibble LUTs for NEON scoring (works for 2-bit and 4-bit).
 
 struct QueryNeonLut {
-    uint8_luts: Vec<u8>,  // n_byte_groups * 32 bytes: [hi_16 | lo_16] per group
+    uint8_luts: Vec<u8>, // n_byte_groups * 32 bytes: [hi_16 | lo_16] per group
     scale: f32,
     /// Total decode bias = sum of per-sub-table mins. Added once to
     /// the accumulator at the end of scoring, not per lookup.
     bias: f32,
 }
-
 
 /// Build nibble LUTs for NEON/AVX2 scoring from a flat query rotation row.
 ///
@@ -1212,8 +1325,12 @@ fn build_query_neon_lut_from_slice(
                 s += q_rot_row[dim_start + c] * centroids[code as usize];
             }
             float_vals[g * 32 + nibble_val as usize] = s;
-            if s < lo_min { lo_min = s; }
-            if s > lo_max { lo_max = s; }
+            if s < lo_min {
+                lo_min = s;
+            }
+            if s > lo_max {
+                lo_max = s;
+            }
         }
 
         // hi nibble sub-table (16 entries)
@@ -1227,8 +1344,12 @@ fn build_query_neon_lut_from_slice(
                 s += q_rot_row[dim_start + codes_per_nibble + c] * centroids[code as usize];
             }
             float_vals[g * 32 + 16 + nibble_val as usize] = s;
-            if s < hi_min { hi_min = s; }
-            if s > hi_max { hi_max = s; }
+            if s < hi_min {
+                hi_min = s;
+            }
+            if s > hi_max {
+                hi_max = s;
+            }
         }
 
         mins[g * 2] = lo_min;
@@ -1237,8 +1358,12 @@ fn build_query_neon_lut_from_slice(
 
         let lo_span = lo_max - lo_min;
         let hi_span = hi_max - hi_min;
-        if lo_span > max_span { max_span = lo_span; }
-        if hi_span > max_span { max_span = hi_span; }
+        if lo_span > max_span {
+            max_span = lo_span;
+        }
+        if hi_span > max_span {
+            max_span = hi_span;
+        }
         sum_spans += lo_span + hi_span;
     }
 
@@ -1259,7 +1384,11 @@ fn build_query_neon_lut_from_slice(
                        // used now that both kernels flush.
     let max_lut: f32 = 127.0;
 
-    let scale = if max_span > 1e-10 { max_span / max_lut } else { 1.0 };
+    let scale = if max_span > 1e-10 {
+        max_span / max_lut
+    } else {
+        1.0
+    };
     let inv_scale = 1.0 / scale;
 
     for g in 0..n_byte_groups {
@@ -1268,14 +1397,20 @@ fn build_query_neon_lut_from_slice(
         for i in 0..16 {
             let j_lo = g * 32 + i;
             let j_hi = g * 32 + 16 + i;
-            uint8_luts[j_lo] =
-                ((float_vals[j_lo] - lo_min) * inv_scale).round().clamp(0.0, max_lut) as u8;
-            uint8_luts[j_hi] =
-                ((float_vals[j_hi] - hi_min) * inv_scale).round().clamp(0.0, max_lut) as u8;
+            uint8_luts[j_lo] = ((float_vals[j_lo] - lo_min) * inv_scale)
+                .round()
+                .clamp(0.0, max_lut) as u8;
+            uint8_luts[j_hi] = ((float_vals[j_hi] - hi_min) * inv_scale)
+                .round()
+                .clamp(0.0, max_lut) as u8;
         }
     }
 
-    QueryNeonLut { uint8_luts, scale, bias }
+    QueryNeonLut {
+        uint8_luts,
+        scale,
+        bias,
+    }
 }
 
 /// Slot-allowlist bitmask: packed little-endian, bit `i` set iff slot `i` is
@@ -1457,6 +1592,189 @@ fn calibrate_queries(
     (q_calib, bias_corrs)
 }
 
+fn unpack_bitplane_code(
+    packed_row: &[u8],
+    coord: usize,
+    bits: usize,
+    bytes_per_plane: usize,
+) -> usize {
+    let byte_pos = coord / 8;
+    let bit_pos = 7 - (coord % 8);
+    let mut code = 0usize;
+    for p in 0..bits {
+        let plane_byte = packed_row[p * bytes_per_plane + byte_pos];
+        if (plane_byte >> bit_pos) & 1 != 0 {
+            code |= 1usize << p;
+        }
+    }
+    code
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_heap_candidate(
+    score: f32,
+    index: u32,
+    heap_s: &mut [f32],
+    heap_i: &mut [u32],
+    heap_sz: &mut usize,
+    heap_min: &mut f32,
+    heap_mi: &mut usize,
+) {
+    if *heap_sz < heap_s.len() {
+        heap_s[*heap_sz] = score;
+        heap_i[*heap_sz] = index;
+        *heap_sz += 1;
+        if *heap_sz == heap_s.len() {
+            *heap_min = heap_s[0];
+            *heap_mi = 0;
+            for h in 1..heap_s.len() {
+                if heap_s[h] < *heap_min {
+                    *heap_min = heap_s[h];
+                    *heap_mi = h;
+                }
+            }
+        }
+    } else if score > *heap_min {
+        heap_s[*heap_mi] = score;
+        heap_i[*heap_mi] = index;
+        *heap_min = heap_s[0];
+        *heap_mi = 0;
+        for h in 1..heap_s.len() {
+            if heap_s[h] < *heap_min {
+                *heap_min = heap_s[h];
+                *heap_mi = h;
+            }
+        }
+    }
+}
+
+/// Direct scalar search for experimental 8/16-bit indexes.
+///
+/// The production SIMD kernels score nibble-packed 2/3/4-bit layouts. Wider
+/// bit widths keep the canonical bit-plane storage and decode codes directly
+/// during scoring so Android callers can experiment without a separate wide
+/// SIMD packing format.
+#[allow(clippy::too_many_arguments)]
+pub fn search_wide_scalar(
+    queries: &[f32],
+    nq: usize,
+    rotation: &[f32],
+    packed_codes: &[u8],
+    centroids: &[f32],
+    vec_scales: &[f32],
+    tqplus_shift: &[f32],
+    tqplus_scale: &[f32],
+    bits: usize,
+    dim: usize,
+    n_vectors: usize,
+    k: usize,
+    mask: Option<&[u64]>,
+) -> (Vec<f32>, Vec<i64>) {
+    let n_allowed = match mask {
+        Some(m) => m.iter().map(|w| w.count_ones() as usize).sum::<usize>(),
+        None => n_vectors,
+    };
+    let k = k.min(n_vectors).min(n_allowed);
+    if k == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut q_rot = vec![0.0f32; nq * dim];
+    {
+        let q_ref = faer::mat::from_row_major_slice::<f32, _, _>(queries, nq, dim);
+        let r_ref = faer::mat::from_row_major_slice::<f32, _, _>(rotation, dim, dim);
+        let out_mut = faer::mat::from_row_major_slice_mut::<f32, _, _>(&mut q_rot, nq, dim);
+        faer::linalg::matmul::matmul(
+            out_mut,
+            q_ref,
+            r_ref.transpose(),
+            None,
+            1.0_f32,
+            faer::Parallelism::Rayon(0),
+        );
+    }
+
+    let (q_for_lut, bias_corrs) = calibrate_queries(&q_rot, tqplus_shift, tqplus_scale, nq, dim);
+    let bytes_per_plane = dim / 8;
+    let bytes_per_row = bits * bytes_per_plane;
+    debug_assert_eq!(packed_codes.len(), n_vectors * bytes_per_row);
+    let n_blocks = (n_vectors + BLOCK - 1) / BLOCK;
+
+    let results: Vec<(Vec<f32>, Vec<i64>)> = (0..nq)
+        .into_par_iter()
+        .map(|qi| {
+            let q_row = &q_for_lut[qi * dim..(qi + 1) * dim];
+            let mut heap_s = vec![f32::NEG_INFINITY; k];
+            let mut heap_i = vec![0u32; k];
+            let mut heap_sz = 0usize;
+            let mut heap_min = f32::NEG_INFINITY;
+            let mut heap_mi = 0usize;
+
+            for block_idx in 0..n_blocks {
+                let base_vec = block_idx * BLOCK;
+                if !block_has_allowed(mask, base_vec) {
+                    continue;
+                }
+
+                for lane in 0..BLOCK {
+                    let vi = base_vec + lane;
+                    if vi >= n_vectors {
+                        break;
+                    }
+                    if let Some(m) = mask {
+                        if !mask_allows(m, vi) {
+                            continue;
+                        }
+                    }
+
+                    let packed_row = &packed_codes[vi * bytes_per_row..(vi + 1) * bytes_per_row];
+                    let mut score = bias_corrs[qi];
+                    for d in 0..dim {
+                        let code = unpack_bitplane_code(packed_row, d, bits, bytes_per_plane);
+                        score += q_row[d] * centroids[code];
+                    }
+                    score *= vec_scales[vi];
+
+                    insert_heap_candidate(
+                        score,
+                        vi as u32,
+                        &mut heap_s,
+                        &mut heap_i,
+                        &mut heap_sz,
+                        &mut heap_min,
+                        &mut heap_mi,
+                    );
+                }
+            }
+
+            let mut pairs: Vec<(f32, u32)> = heap_s[..heap_sz]
+                .iter()
+                .zip(heap_i[..heap_sz].iter())
+                .map(|(&s, &i)| (s, i))
+                .collect();
+            pairs.sort_unstable_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            (
+                pairs.iter().map(|p| p.0).collect(),
+                pairs.iter().map(|p| p.1 as i64).collect(),
+            )
+        })
+        .collect();
+
+    let mut all_scores = Vec::with_capacity(nq * k);
+    let mut all_indices = Vec::with_capacity(nq * k);
+    for (s, i) in &results {
+        let pad = k.saturating_sub(s.len());
+        all_scores.extend_from_slice(s);
+        all_scores.extend(std::iter::repeat(f32::NEG_INFINITY).take(pad));
+        all_indices.extend_from_slice(i);
+        all_indices.extend(std::iter::repeat(0i64).take(pad));
+    }
+
+    (all_scores, all_indices)
+}
+
 /// Full search: rotation + LUT build + scoring + heap top-k.
 ///
 /// `mask`: optional packed bitset over slots (one bit per vector,
@@ -1466,14 +1784,14 @@ fn calibrate_queries(
 ///
 /// Returns (scores_flat, indices_flat) each of length nq * effective_k.
 pub fn search(
-    queries: &[f32],    // (nq, dim) row-major
+    queries: &[f32], // (nq, dim) row-major
     nq: usize,
-    rotation: &[f32],   // (dim, dim) row-major
+    rotation: &[f32], // (dim, dim) row-major
     blocked_codes: &[u8],
     centroids: &[f32],
     vec_scales: &[f32],
-    tqplus_shift: &[f32],     // empty for v2 indexes (identity calibration)
-    tqplus_scale: &[f32],     // empty for v2 indexes (identity calibration)
+    tqplus_shift: &[f32], // empty for v2 indexes (identity calibration)
+    tqplus_scale: &[f32], // empty for v2 indexes (identity calibration)
     bits: usize,
     dim: usize,
     n_vectors: usize,
@@ -1516,8 +1834,7 @@ pub fn search(
     // The LUT build then runs against q_calibrated; bias_corr_q is folded
     // into the per-query bias the kernel adds to every score. The SIMD
     // kernel itself is unchanged.
-    let (q_for_lut, bias_corrs) =
-        calibrate_queries(&q_rot, tqplus_shift, tqplus_scale, nq, dim);
+    let (q_for_lut, bias_corrs) = calibrate_queries(&q_rot, tqplus_shift, tqplus_scale, nq, dim);
 
     // Build LUTs in parallel; fold the TQ+ bias correction into each lut's
     // bias so the kernel doesn't need to know TQ+ exists.
@@ -1549,7 +1866,12 @@ pub fn search(
                 let mut scores_flat = vec![f32::NEG_INFINITY; QBS * n_vectors];
                 let rows: [*mut f32; QBS] = unsafe {
                     let p = scores_flat.as_mut_ptr();
-                    [p, p.add(n_vectors), p.add(2 * n_vectors), p.add(3 * n_vectors)]
+                    [
+                        p,
+                        p.add(n_vectors),
+                        p.add(2 * n_vectors),
+                        p.add(3 * n_vectors),
+                    ]
                 };
 
                 if batch_size == QBS {
@@ -1584,8 +1906,16 @@ pub fn search(
                         let block_offset = block_idx * n_byte_groups * BLOCK;
                         unsafe {
                             score_4query_block_neon(
-                                blocked_codes, lut_refs, block_offset, n_byte_groups,
-                                scales, biases, vec_scales, base_vec, n_vectors, rows,
+                                blocked_codes,
+                                lut_refs,
+                                block_offset,
+                                n_byte_groups,
+                                scales,
+                                biases,
+                                vec_scales,
+                                base_vec,
+                                n_vectors,
+                                rows,
                             );
                         }
                     }
@@ -1605,8 +1935,16 @@ pub fn search(
                             let mut block_out = [0.0f32; BLOCK];
                             unsafe {
                                 score_4bit_block_neon(
-                                    blocked_codes, &qlut.uint8_luts, block_offset, n_byte_groups,
-                                    qlut.scale, qlut.bias, vec_scales, base_vec, n_vectors, &mut block_out,
+                                    blocked_codes,
+                                    &qlut.uint8_luts,
+                                    block_offset,
+                                    n_byte_groups,
+                                    qlut.scale,
+                                    qlut.bias,
+                                    vec_scales,
+                                    base_vec,
+                                    n_vectors,
+                                    &mut block_out,
                                 );
                                 for lane in 0..(end - base_vec) {
                                     *row_ptr.add(base_vec + lane) = block_out[lane];
@@ -1628,7 +1966,9 @@ pub fn search(
                         let mut heap_mi = 0usize;
                         for (i, &s) in row.iter().enumerate() {
                             if let Some(m) = mask {
-                                if !mask_allows(m, i) { continue; }
+                                if !mask_allows(m, i) {
+                                    continue;
+                                }
                             }
                             if heap_sz < k {
                                 heap_s[heap_sz] = s;
@@ -1657,10 +1997,14 @@ pub fn search(
                                 }
                             }
                         }
-                        let mut pairs: Vec<(f32, u32)> = heap_s[..heap_sz].iter()
+                        let mut pairs: Vec<(f32, u32)> = heap_s[..heap_sz]
+                            .iter()
                             .zip(heap_i[..heap_sz].iter())
-                            .map(|(&s, &i)| (s, i)).collect();
-                        pairs.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                            .map(|(&s, &i)| (s, i))
+                            .collect();
+                        pairs.sort_unstable_by(|a, b| {
+                            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+                        });
                         let s: Vec<f32> = pairs.iter().map(|p| p.0).collect();
                         let i: Vec<i64> = pairs.iter().map(|p| p.1 as i64).collect();
                         (s, i)
@@ -1684,24 +2028,39 @@ pub fn search(
                 let pad_qi = qi_end - 1;
                 let lut_refs: Vec<&[u8]> = (0..NQ_BATCH)
                     .map(|i| {
-                        let qi = if qi_start + i < qi_end { qi_start + i } else { pad_qi };
+                        let qi = if qi_start + i < qi_end {
+                            qi_start + i
+                        } else {
+                            pad_qi
+                        };
                         query_luts[qi].uint8_luts.as_slice()
-                    }).collect();
+                    })
+                    .collect();
                 let scale_vals: Vec<f32> = (0..NQ_BATCH)
                     .map(|i| {
-                        let qi = if qi_start + i < qi_end { qi_start + i } else { pad_qi };
+                        let qi = if qi_start + i < qi_end {
+                            qi_start + i
+                        } else {
+                            pad_qi
+                        };
                         query_luts[qi].scale
-                    }).collect();
+                    })
+                    .collect();
                 let bias_vals: Vec<f32> = (0..NQ_BATCH)
                     .map(|i| {
-                        let qi = if qi_start + i < qi_end { qi_start + i } else { pad_qi };
+                        let qi = if qi_start + i < qi_end {
+                            qi_start + i
+                        } else {
+                            pad_qi
+                        };
                         query_luts[qi].bias
-                    }).collect();
+                    })
+                    .collect();
 
-                let mut heap_scores: Vec<Vec<f32>> = (0..batch_nq)
-                    .map(|_| vec![f32::NEG_INFINITY; k]).collect();
-                let mut heap_indices: Vec<Vec<u32>> = (0..batch_nq)
-                    .map(|_| vec![0u32; k]).collect();
+                let mut heap_scores: Vec<Vec<f32>> =
+                    (0..batch_nq).map(|_| vec![f32::NEG_INFINITY; k]).collect();
+                let mut heap_indices: Vec<Vec<u32>> =
+                    (0..batch_nq).map(|_| vec![0u32; k]).collect();
                 let mut heap_sizes = vec![0usize; batch_nq];
                 let mut heap_mins = vec![f32::NEG_INFINITY; batch_nq];
                 let mut heap_min_idxs = vec![0usize; batch_nq];
@@ -1709,19 +2068,39 @@ pub fn search(
                 unsafe {
                     if is_x86_feature_detected!("avx512bw") && is_x86_feature_detected!("avx512f") {
                         search_multi_query_avx512bw(
-                            blocked_codes, &lut_refs, &scale_vals, &bias_vals,
-                            n_byte_groups, vec_scales, n_vectors,
-                            batch_nq, k, mask,
-                            &mut heap_scores, &mut heap_indices,
-                            &mut heap_sizes, &mut heap_mins, &mut heap_min_idxs,
+                            blocked_codes,
+                            &lut_refs,
+                            &scale_vals,
+                            &bias_vals,
+                            n_byte_groups,
+                            vec_scales,
+                            n_vectors,
+                            batch_nq,
+                            k,
+                            mask,
+                            &mut heap_scores,
+                            &mut heap_indices,
+                            &mut heap_sizes,
+                            &mut heap_mins,
+                            &mut heap_min_idxs,
                         );
                     } else if is_x86_feature_detected!("avx2") {
                         search_multi_query_avx2(
-                            blocked_codes, &lut_refs, &scale_vals, &bias_vals,
-                            n_byte_groups, vec_scales, n_vectors,
-                            batch_nq, k, mask,
-                            &mut heap_scores, &mut heap_indices,
-                            &mut heap_sizes, &mut heap_mins, &mut heap_min_idxs,
+                            blocked_codes,
+                            &lut_refs,
+                            &scale_vals,
+                            &bias_vals,
+                            n_byte_groups,
+                            vec_scales,
+                            n_vectors,
+                            batch_nq,
+                            k,
+                            mask,
+                            &mut heap_scores,
+                            &mut heap_indices,
+                            &mut heap_sizes,
+                            &mut heap_mins,
+                            &mut heap_min_idxs,
                         );
                     } else {
                         // Neither AVX-512 BW nor AVX2 detected at runtime on
@@ -1755,10 +2134,14 @@ pub fn search(
                 let mut batch_results = Vec::with_capacity(batch_nq);
                 for qo in 0..batch_nq {
                     let sz = heap_sizes[qo];
-                    let mut pairs: Vec<(f32, u32)> = heap_scores[qo][..sz].iter()
+                    let mut pairs: Vec<(f32, u32)> = heap_scores[qo][..sz]
+                        .iter()
                         .zip(heap_indices[qo][..sz].iter())
-                        .map(|(&s, &i)| (s, i)).collect();
-                    pairs.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                        .map(|(&s, &i)| (s, i))
+                        .collect();
+                    pairs.sort_unstable_by(|a, b| {
+                        b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+                    });
                     batch_results.push((
                         pairs.iter().map(|p| p.0).collect::<Vec<f32>>(),
                         pairs.iter().map(|p| p.1 as i64).collect::<Vec<i64>>(),
@@ -1799,10 +2182,18 @@ pub fn search(
                     &mut heap_min,
                     &mut heap_mi,
                 );
-                let mut pairs: Vec<(f32, u32)> = heap_s[..heap_sz].iter()
-                    .zip(heap_i[..heap_sz].iter()).map(|(&s, &i)| (s, i)).collect();
-                pairs.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                (pairs.iter().map(|p| p.0).collect(), pairs.iter().map(|p| p.1 as i64).collect())
+                let mut pairs: Vec<(f32, u32)> = heap_s[..heap_sz]
+                    .iter()
+                    .zip(heap_i[..heap_sz].iter())
+                    .map(|(&s, &i)| (s, i))
+                    .collect();
+                pairs.sort_unstable_by(|a, b| {
+                    b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                (
+                    pairs.iter().map(|p| p.0).collect(),
+                    pairs.iter().map(|p| p.1 as i64).collect(),
+                )
             })
             .collect();
         results

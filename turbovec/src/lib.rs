@@ -1,6 +1,6 @@
 //! TurboQuant implementation for vector search.
 //!
-//! Compresses high-dimensional vectors to 2-4 bits per coordinate with
+//! Compresses high-dimensional vectors to 2, 3, 4, 8, or 16 bits per coordinate with
 //! near-optimal distortion. Data-oblivious — no training required.
 //!
 //! ```no_run
@@ -52,6 +52,10 @@ use std::sync::OnceLock;
 const ROTATION_SEED: u64 = 42;
 const BLOCK: usize = 32;
 const FLUSH_EVERY: usize = 256;
+
+pub(crate) fn is_supported_bit_width(bit_width: usize) -> bool {
+    matches!(bit_width, 2 | 3 | 4 | 8 | 16)
+}
 
 /// Maximum permitted coordinate magnitude. Beyond this, f32 sum-of-
 /// squares in the norm computation can overflow to +Inf for any
@@ -153,10 +157,10 @@ impl TurboQuantIndex {
     /// must match.
     ///
     /// Returns [`ConstructError::BitWidthOutOfRange`] if `bit_width` is
-    /// not in `{2, 3, 4}` and [`ConstructError::DimNotPositiveMultipleOf8`]
+    /// not in `{2, 3, 4, 8, 16}` and [`ConstructError::DimNotPositiveMultipleOf8`]
     /// if `dim == 0` or `dim % 8 != 0`.
     pub fn new(dim: usize, bit_width: usize) -> Result<Self, ConstructError> {
-        if !(2..=4).contains(&bit_width) {
+        if !is_supported_bit_width(bit_width) {
             return Err(ConstructError::BitWidthOutOfRange(bit_width));
         }
         if dim == 0 || dim % 8 != 0 {
@@ -183,9 +187,9 @@ impl TurboQuantIndex {
     /// (or [`Self::add`] if the caller wires dim in separately).
     ///
     /// Returns [`ConstructError::BitWidthOutOfRange`] if `bit_width` is
-    /// not in `{2, 3, 4}`.
+    /// not in `{2, 3, 4, 8, 16}`.
     pub fn new_lazy(bit_width: usize) -> Result<Self, ConstructError> {
-        if !(2..=4).contains(&bit_width) {
+        if !is_supported_bit_width(bit_width) {
             return Err(ConstructError::BitWidthOutOfRange(bit_width));
         }
         Ok(Self {
@@ -428,12 +432,6 @@ impl TurboQuantIndex {
             let (_, c) = codebook::codebook(self.bit_width, dim);
             c
         });
-        let blocked = self.blocked.get_or_init(|| {
-            let (data, n_blocks) =
-                pack::repack(&self.packed_codes, self.n_vectors, self.bit_width, dim);
-            BlockedCache { data, n_blocks }
-        });
-
         let packed_mask = mask.map(|m| {
             assert_eq!(
                 m.len(),
@@ -456,6 +454,37 @@ impl TurboQuantIndex {
             p.iter().map(|w| w.count_ones() as usize).sum::<usize>()
         });
         let effective_k = k.min(self.n_vectors).min(n_allowed);
+
+        if self.bit_width > 4 {
+            let (scores, indices) = search::search_wide_scalar(
+                queries,
+                nq,
+                rotation,
+                &self.packed_codes,
+                centroids,
+                &self.scales,
+                &self.tqplus_shift,
+                &self.tqplus_scale,
+                self.bit_width,
+                dim,
+                self.n_vectors,
+                k,
+                packed_mask.as_deref(),
+            );
+
+            return SearchResults {
+                scores,
+                indices,
+                nq,
+                k: effective_k,
+            };
+        }
+
+        let blocked = self.blocked.get_or_init(|| {
+            let (data, n_blocks) =
+                pack::repack(&self.packed_codes, self.n_vectors, self.bit_width, dim);
+            BlockedCache { data, n_blocks }
+        });
 
         let (scores, indices) = search::search(
             queries,
@@ -501,11 +530,13 @@ impl TurboQuantIndex {
             let (_, c) = codebook::codebook(self.bit_width, dim);
             c
         });
-        self.blocked.get_or_init(|| {
-            let (data, n_blocks) =
-                pack::repack(&self.packed_codes, self.n_vectors, self.bit_width, dim);
-            BlockedCache { data, n_blocks }
-        });
+        if self.bit_width <= 4 {
+            self.blocked.get_or_init(|| {
+                let (data, n_blocks) =
+                    pack::repack(&self.packed_codes, self.n_vectors, self.bit_width, dim);
+                BlockedCache { data, n_blocks }
+            });
+        }
     }
 
     pub fn write(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
@@ -599,7 +630,10 @@ impl TurboQuantIndex {
                     packed_codes.is_empty(),
                     "from_parts: lazy index must have empty packed_codes",
                 );
-                assert!(scales.is_empty(), "from_parts: lazy index must have empty scales");
+                assert!(
+                    scales.is_empty(),
+                    "from_parts: lazy index must have empty scales"
+                );
                 assert!(
                     tqplus_shift.is_empty(),
                     "from_parts: lazy index must have empty tqplus_shift",
@@ -767,7 +801,7 @@ mod from_parts_tests {
             4,
             2,
             vec![0u8; 64],
-            vec![1.0f32; 5],  // n_vectors says 2; scales has 5
+            vec![1.0f32; 5], // n_vectors says 2; scales has 5
             Vec::new(),
             Vec::new(),
         );
@@ -782,8 +816,8 @@ mod from_parts_tests {
             2,
             vec![0u8; 64],
             vec![1.0f32; 2],
-            vec![0.0f32; 64],   // length 64
-            vec![1.0f32; 32],   // length 32 — mismatch
+            vec![0.0f32; 64], // length 64
+            vec![1.0f32; 32], // length 32 — mismatch
         );
     }
 
@@ -796,7 +830,7 @@ mod from_parts_tests {
             2,
             vec![0u8; 64],
             vec![1.0f32; 2],
-            vec![0.0f32; 48],   // length 48 != dim 64
+            vec![0.0f32; 48], // length 48 != dim 64
             vec![1.0f32; 48],
         );
     }
@@ -804,30 +838,16 @@ mod from_parts_tests {
     #[test]
     #[should_panic(expected = "lazy index must have n_vectors=0")]
     fn from_parts_panics_on_lazy_with_nonzero_n_vectors() {
-        let _ = TurboQuantIndex::from_parts(
-            None,
-            4,
-            5,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let _ =
+            TurboQuantIndex::from_parts(None, 4, 5, Vec::new(), Vec::new(), Vec::new(), Vec::new());
     }
 
     #[test]
     fn from_parts_accepts_lazy_uncommitted() {
         // Lazy + everything empty + n_vectors=0 is the canonical lazy
         // state the constructor must accept.
-        let idx = TurboQuantIndex::from_parts(
-            None,
-            4,
-            0,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let idx =
+            TurboQuantIndex::from_parts(None, 4, 0, Vec::new(), Vec::new(), Vec::new(), Vec::new());
         assert_eq!(idx.dim_opt(), None);
         assert_eq!(idx.len(), 0);
     }

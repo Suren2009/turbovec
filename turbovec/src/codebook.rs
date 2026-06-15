@@ -4,11 +4,41 @@
 //! follows Beta((d-1)/2, (d-1)/2) on [-1, 1]. This module computes optimal
 //! quantization boundaries and centroids for that distribution.
 
-use statrs::distribution::{Beta, ContinuousCDF, Continuous};
+use statrs::distribution::{Beta, Continuous, ContinuousCDF, Normal};
 
 /// Returns (boundaries, centroids) for the given bit width and dimension.
 pub fn codebook(bits: usize, dim: usize) -> (Vec<f32>, Vec<f32>) {
-    lloyd_max(bits, dim, 200, 1e-12)
+    if bits <= 4 {
+        lloyd_max(bits, dim, 200, 1e-12)
+    } else {
+        high_bit_quantile_codebook(bits, dim)
+    }
+}
+
+/// Build an experimental high-rate codebook for 8/16-bit scalar modes.
+///
+/// Running Lloyd-Max to convergence at 65,536 levels is impractical on mobile
+/// devices. At these rates the high-dimensional Beta marginal is already very
+/// close to N(0, 1/d), so use evenly spaced normal quantiles as reconstruction
+/// levels and midpoint decision boundaries.
+fn high_bit_quantile_codebook(bits: usize, dim: usize) -> (Vec<f32>, Vec<f32>) {
+    let n_levels = 1usize << bits;
+    let normal = Normal::new(0.0, (dim as f64).sqrt().recip())
+        .expect("normal distribution is valid for positive dim");
+
+    let centroids: Vec<f32> = (0..n_levels)
+        .map(|i| {
+            let p = (i as f64 + 0.5) / n_levels as f64;
+            normal.inverse_cdf(p).clamp(-1.0, 1.0) as f32
+        })
+        .collect();
+
+    let boundaries: Vec<f32> = centroids
+        .windows(2)
+        .map(|pair| (pair[0] + pair[1]) * 0.5)
+        .collect();
+
+    (boundaries, centroids)
 }
 
 fn lloyd_max(bits: usize, dim: usize, max_iter: usize, tol: f64) -> (Vec<f32>, Vec<f32>) {
