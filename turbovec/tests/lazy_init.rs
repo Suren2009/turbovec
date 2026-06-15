@@ -286,7 +286,8 @@ fn id_map_write_load_round_trip_lazy_after_committed_add() {
     let ids: Vec<u64> = vec![100, 200, 300];
     {
         let mut idx = IdMapIndex::new_lazy(4).unwrap();
-        idx.add_with_ids_2d(&unit_vectors(3, DIM, 0xA00D_0013), DIM, &ids).unwrap();
+        idx.add_with_ids_2d(&unit_vectors(3, DIM, 0xA00D_0013), DIM, &ids)
+            .unwrap();
         idx.write(&tmp).unwrap();
     }
     let loaded = IdMapIndex::load(&tmp).unwrap();
@@ -302,9 +303,17 @@ fn id_map_write_load_round_trip_lazy_after_committed_add() {
 
 #[test]
 fn new_rejects_bad_bit_width() {
-    for bw in [0usize, 1, 5, 8, 100] {
+    for bw in [0usize, 1, 5, 6, 7, 9, 15, 17, 100] {
         let err = TurboQuantIndex::new(DIM, bw).err().unwrap();
         assert_eq!(err, turbovec::ConstructError::BitWidthOutOfRange(bw));
+    }
+}
+
+#[test]
+fn new_accepts_supported_bit_widths() {
+    for bw in [2usize, 3, 4, 8, 16] {
+        let idx = TurboQuantIndex::new(DIM, bw).unwrap();
+        assert_eq!(idx.bit_width(), bw);
     }
 }
 
@@ -312,13 +321,16 @@ fn new_rejects_bad_bit_width() {
 fn new_rejects_bad_dim() {
     for dim in [0usize, 1, 4, 7, 9, 15] {
         let err = TurboQuantIndex::new(dim, 4).err().unwrap();
-        assert_eq!(err, turbovec::ConstructError::DimNotPositiveMultipleOf8(dim));
+        assert_eq!(
+            err,
+            turbovec::ConstructError::DimNotPositiveMultipleOf8(dim)
+        );
     }
 }
 
 #[test]
 fn new_lazy_rejects_bad_bit_width() {
-    for bw in [0usize, 1, 5, 8] {
+    for bw in [0usize, 1, 5, 6, 7, 9, 15, 17] {
         let err = TurboQuantIndex::new_lazy(bw).err().unwrap();
         assert_eq!(err, turbovec::ConstructError::BitWidthOutOfRange(bw));
     }

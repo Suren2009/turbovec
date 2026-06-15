@@ -22,6 +22,8 @@
 //! lets us detect either a current file or "looks like a v1 turbovec
 //! file" cleanly.
 
+use crate::is_supported_bit_width;
+
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -54,8 +56,14 @@ pub fn write(
     f.write_all(TV_MAGIC)?;
     f.write_all(&[TV_VERSION])?;
     write_core(
-        &mut f, bit_width, dim, n_vectors, packed_codes, scales,
-        tqplus_shift, tqplus_scale,
+        &mut f,
+        bit_width,
+        dim,
+        n_vectors,
+        packed_codes,
+        scales,
+        tqplus_shift,
+        tqplus_scale,
     )?;
     f.flush()?;
     Ok(())
@@ -119,8 +127,14 @@ pub fn write_id_map(
     f.write_all(TVIM_MAGIC)?;
     f.write_all(&[TVIM_VERSION])?;
     write_core(
-        &mut f, bit_width, dim, n_vectors, packed_codes, scales,
-        tqplus_shift, tqplus_scale,
+        &mut f,
+        bit_width,
+        dim,
+        n_vectors,
+        packed_codes,
+        scales,
+        tqplus_shift,
+        tqplus_scale,
     )?;
 
     for &id in slot_to_id {
@@ -133,7 +147,16 @@ pub fn write_id_map(
 /// `.tvim` load — positional index plus the id-map side-tables.
 pub fn load_id_map(
     path: impl AsRef<Path>,
-) -> io::Result<(usize, usize, usize, Vec<u8>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<u64>)> {
+) -> io::Result<(
+    usize,
+    usize,
+    usize,
+    Vec<u8>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<u64>,
+)> {
     let mut f = BufReader::new(File::open(path)?);
 
     let mut magic = [0u8; 4];
@@ -168,7 +191,13 @@ pub fn load_id_map(
     }
 
     Ok((
-        bit_width, dim, n_vectors, packed_codes, scales, tqplus_shift, tqplus_scale,
+        bit_width,
+        dim,
+        n_vectors,
+        packed_codes,
+        scales,
+        tqplus_shift,
+        tqplus_scale,
         slot_to_id,
     ))
 }
@@ -237,7 +266,15 @@ fn read_core_versioned<R: Read>(
 /// v2: header + codes + scales. Returns empty TQ+ vectors (identity calibration).
 fn read_core_v2<R: Read>(r: &mut R) -> io::Result<CoreLoad> {
     let (bit_width, dim, n_vectors, packed_codes, scales) = read_header_codes_scales(r)?;
-    Ok((bit_width, dim, n_vectors, packed_codes, scales, Vec::new(), Vec::new()))
+    Ok((
+        bit_width,
+        dim,
+        n_vectors,
+        packed_codes,
+        scales,
+        Vec::new(),
+        Vec::new(),
+    ))
 }
 
 /// v3: header + codes + scales + TQ+ trailer.
@@ -256,7 +293,15 @@ fn read_core_v3<R: Read>(r: &mut R) -> io::Result<CoreLoad> {
     let tqplus_shift = read_f32_array(r, n_calib)?;
     let tqplus_scale = read_f32_array(r, n_calib)?;
 
-    Ok((bit_width, dim, n_vectors, packed_codes, scales, tqplus_shift, tqplus_scale))
+    Ok((
+        bit_width,
+        dim,
+        n_vectors,
+        packed_codes,
+        scales,
+        tqplus_shift,
+        tqplus_scale,
+    ))
 }
 
 fn read_header_codes_scales<R: Read>(
@@ -267,6 +312,12 @@ fn read_header_codes_scales<R: Read>(
     let bit_width = header[0] as usize;
     let dim = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
     let n_vectors = u32::from_le_bytes([header[5], header[6], header[7], header[8]]) as usize;
+    if !is_supported_bit_width(bit_width) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported bit_width {bit_width}: expected one of 2, 3, 4, 8, or 16"),
+        ));
+    }
 
     let packed_bytes = (dim / 8) * bit_width * n_vectors;
     let mut packed_codes = vec![0u8; packed_bytes];

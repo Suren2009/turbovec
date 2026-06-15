@@ -20,7 +20,7 @@ public final class TurboVecIndex implements AutoCloseable {
      * Creates an index with a fixed dimensionality.
      *
      * @param dim vector dimensionality; must be positive and a multiple of 8
-     * @param bitWidth quantization bit width, one of 2, 3, or 4
+     * @param bitWidth quantization bit width, one of 2, 3, 4, 8, or 16
      */
     public TurboVecIndex(int dim, int bitWidth) {
         if (dim <= 0 || dim % 8 != 0) {
@@ -173,8 +173,8 @@ public final class TurboVecIndex implements AutoCloseable {
     }
 
     private static void validateBitWidth(int bitWidth) {
-        if (bitWidth < 2 || bitWidth > 4) {
-            throw new IllegalArgumentException("bitWidth must be one of 2, 3, or 4");
+        if (bitWidth != 2 && bitWidth != 3 && bitWidth != 4 && bitWidth != 8 && bitWidth != 16) {
+            throw new IllegalArgumentException("bitWidth must be one of 2, 3, 4, 8, or 16");
         }
     }
 

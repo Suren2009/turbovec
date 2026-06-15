@@ -66,7 +66,8 @@ pub fn encode(
     let mut unit_flat = vec![0.0f32; n * dim];
 
     // Normalize. Rows are independent so Rayon splits them across cores.
-    norms.par_iter_mut()
+    norms
+        .par_iter_mut()
         .zip(unit_flat.par_chunks_mut(dim))
         .enumerate()
         .for_each(|(i, (norm, unit_row))| {
@@ -101,12 +102,15 @@ pub fn encode(
     // and encoding is one-shot, so we eat the allocation rather than
     // recompute inline per row.
     let mut rotated_calib = vec![0.0f32; n * dim];
-    rotated_calib.par_chunks_mut(dim).enumerate().for_each(|(i, calib_row)| {
-        let orig_row = &rotated[i * dim..(i + 1) * dim];
-        for d in 0..dim {
-            calib_row[d] = (orig_row[d] + shift[d]) * scale_tq[d];
-        }
-    });
+    rotated_calib
+        .par_chunks_mut(dim)
+        .enumerate()
+        .for_each(|(i, calib_row)| {
+            let orig_row = &rotated[i * dim..(i + 1) * dim];
+            for d in 0..dim {
+                calib_row[d] = (orig_row[d] + shift[d]) * scale_tq[d];
+            }
+        });
 
     // Precompute 1/scale_tq for the inner-product reconstruction inside the
     // fused per-row function. Avoids a divide per coord per vector.
@@ -117,16 +121,25 @@ pub fn encode(
     let mut packed = vec![0u8; n * bytes_per_row];
     let mut scales = vec![0.0f32; n];
 
-    packed.par_chunks_mut(bytes_per_row)
+    packed
+        .par_chunks_mut(bytes_per_row)
         .zip(scales.par_iter_mut())
         .enumerate()
         .for_each(|(i, (packed_row, scale))| {
             let rot_orig = &rotated[i * dim..(i + 1) * dim];
             let rot_calib = &rotated_calib[i * dim..(i + 1) * dim];
             *scale = fused_quantize_scale_pack(
-                rot_orig, rot_calib, &shift, &inv_scale_tq,
-                boundaries, centroids, norms[i],
-                packed_row, dim, bit_width, bytes_per_plane,
+                rot_orig,
+                rot_calib,
+                &shift,
+                &inv_scale_tq,
+                boundaries,
+                centroids,
+                norms[i],
+                packed_row,
+                dim,
+                bit_width,
+                bytes_per_plane,
             );
         });
 
@@ -138,11 +151,7 @@ pub fn encode(
 /// (P_LO, P_HI) quantiles onto the canonical Beta((dim-1)/2, (dim-1)/2)
 /// marginal's quantiles. When the batch is too small or a coord is
 /// degenerate (constant or near-constant), falls back to identity.
-fn compute_tqplus_calibration(
-    rotated: &[f32],
-    n: usize,
-    dim: usize,
-) -> (Vec<f32>, Vec<f32>) {
+fn compute_tqplus_calibration(rotated: &[f32], n: usize, dim: usize) -> (Vec<f32>, Vec<f32>) {
     let mut shift = vec![0.0f32; dim];
     let mut scale = vec![1.0f32; dim];
 
@@ -164,8 +173,11 @@ fn compute_tqplus_calibration(
     let hi_idx = (((n as f64) * TQPLUS_P_HI) as usize).min(n - 1);
 
     // Each coord is independent — fan out over coords.
-    shift.par_iter_mut().zip(scale.par_iter_mut()).enumerate().for_each(
-        |(d, (sh, sc))| {
+    shift
+        .par_iter_mut()
+        .zip(scale.par_iter_mut())
+        .enumerate()
+        .for_each(|(d, (sh, sc))| {
             let mut coord: Vec<f32> = (0..n).map(|i| rotated[i * dim + d]).collect();
             coord.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
             let qe_lo = coord[lo_idx];
@@ -176,8 +188,7 @@ fn compute_tqplus_calibration(
                 *sh = qc_lo / *sc - qe_lo;
             }
             // else: leave as (shift=0, scale=1) for this coord
-        },
-    );
+        });
 
     (shift, scale)
 }
@@ -272,6 +283,22 @@ fn fused_quantize_scale_pack(
     bits: usize,
     bytes_per_plane: usize,
 ) -> f32 {
+    if bits > 4 {
+        return fused_quantize_scale_pack_scalar(
+            rot_orig,
+            rot_calib,
+            shift,
+            inv_scale_tq,
+            boundaries,
+            centroids,
+            norm,
+            packed_row,
+            dim,
+            bits,
+            bytes_per_plane,
+        );
+    }
+
     use std::arch::aarch64::*;
 
     let mut inner = 0.0f64;
@@ -309,9 +336,9 @@ fn fused_quantize_scale_pack(
             // Inner-product reconstruction in ORIGINAL space (see doc comment).
             for k in 0..8 {
                 let d = offset + k;
-                let centroid_in_orig =
-                    (centroids[counts[k] as usize] as f64) * (inv_scale_tq[d] as f64)
-                        - (shift[d] as f64);
+                let centroid_in_orig = (centroids[counts[k] as usize] as f64)
+                    * (inv_scale_tq[d] as f64)
+                    - (shift[d] as f64);
                 inner += (rot_orig[d] as f64) * centroid_in_orig;
             }
 
@@ -332,11 +359,12 @@ fn fused_quantize_scale_pack(
         for j in (chunks * 8)..dim {
             let mut code = 0u8;
             for &b in boundaries {
-                if rot_calib[j] > b { code += 1; }
+                if rot_calib[j] > b {
+                    code += 1;
+                }
             }
             let centroid_in_orig =
-                (centroids[code as usize] as f64) * (inv_scale_tq[j] as f64)
-                    - (shift[j] as f64);
+                (centroids[code as usize] as f64) * (inv_scale_tq[j] as f64) - (shift[j] as f64);
             inner += (rot_orig[j] as f64) * centroid_in_orig;
             let byte_pos = j / 8;
             let bit_pos = 7 - (j % 8);
@@ -369,22 +397,73 @@ fn fused_quantize_scale_pack(
     bits: usize,
     bytes_per_plane: usize,
 ) -> f32 {
+    if bits > 4 {
+        return fused_quantize_scale_pack_scalar(
+            rot_orig,
+            rot_calib,
+            shift,
+            inv_scale_tq,
+            boundaries,
+            centroids,
+            norm,
+            packed_row,
+            dim,
+            bits,
+            bytes_per_plane,
+        );
+    }
+
     let mut inner = 0.0f64;
 
     for j in 0..dim {
         let mut code = 0u8;
         for &b in boundaries {
-            if rot_calib[j] > b { code += 1; }
+            if rot_calib[j] > b {
+                code += 1;
+            }
         }
         let centroid_in_orig =
-            (centroids[code as usize] as f64) * (inv_scale_tq[j] as f64)
-                - (shift[j] as f64);
+            (centroids[code as usize] as f64) * (inv_scale_tq[j] as f64) - (shift[j] as f64);
         inner += (rot_orig[j] as f64) * centroid_in_orig;
 
         let byte_pos = j / 8;
         let bit_pos = 7 - (j % 8);
         for p in 0..bits {
             if code & (1 << p) != 0 {
+                packed_row[p * bytes_per_plane + byte_pos] |= 1 << bit_pos;
+            }
+        }
+    }
+
+    let inner = inner.max(1e-10) as f32;
+    norm / inner
+}
+
+fn fused_quantize_scale_pack_scalar(
+    rot_orig: &[f32],
+    rot_calib: &[f32],
+    shift: &[f32],
+    inv_scale_tq: &[f32],
+    boundaries: &[f32],
+    centroids: &[f32],
+    norm: f32,
+    packed_row: &mut [u8],
+    dim: usize,
+    bits: usize,
+    bytes_per_plane: usize,
+) -> f32 {
+    let mut inner = 0.0f64;
+
+    for j in 0..dim {
+        let code = boundaries.partition_point(|&b| rot_calib[j] > b);
+        let centroid_in_orig =
+            (centroids[code] as f64) * (inv_scale_tq[j] as f64) - (shift[j] as f64);
+        inner += (rot_orig[j] as f64) * centroid_in_orig;
+
+        let byte_pos = j / 8;
+        let bit_pos = 7 - (j % 8);
+        for p in 0..bits {
+            if code & (1usize << p) != 0 {
                 packed_row[p * bytes_per_plane + byte_pos] |= 1 << bit_pos;
             }
         }

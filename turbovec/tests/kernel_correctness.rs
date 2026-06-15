@@ -132,6 +132,33 @@ fn self_query_returns_self_top3_2bit() {
 }
 
 #[test]
+fn wide_bit_widths_support_self_query_search() {
+    // 8/16-bit modes use the experimental scalar wide-code path rather than
+    // the nibble SIMD kernels. A compact self-query check exercises encode,
+    // prepare, and top-k scoring without making the test suite expensive.
+    let dim = 128;
+    let n = 96;
+
+    for bits in [8usize, 16] {
+        let data = gaussian_normalized(n, dim, 0xB17B_0000 ^ bits as u64);
+        let mut idx = TurboQuantIndex::new(dim, bits).unwrap();
+        idx.add(&data);
+        idx.prepare();
+
+        let nq = 4;
+        let res = idx.search(&data[..nq * dim], 1);
+
+        for qi in 0..nq {
+            assert_eq!(
+                res.indices_for_query(qi)[0],
+                qi as i64,
+                "{bits}-bit self-match failed for query {qi}",
+            );
+        }
+    }
+}
+
+#[test]
 fn search_scores_are_sorted_descending() {
     // The heap path should return results in descending-score order.
     // A block handling or heap-min tracking bug often shows up as an
@@ -181,11 +208,7 @@ fn search_is_deterministic_for_same_query() {
             "non-deterministic indices at n={}",
             n
         );
-        assert_eq!(
-            r1.scores, r2.scores,
-            "non-deterministic scores at n={}",
-            n
-        );
+        assert_eq!(r1.scores, r2.scores, "non-deterministic scores at n={}", n);
     }
 }
 
