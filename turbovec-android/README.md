@@ -102,6 +102,25 @@ try (TurboVecIndex index = new TurboVecIndex(1536, 4)) {
 }
 ```
 
+The Java API also accepts signed int8 vectors (`byte[]`) and IEEE-754 binary16
+vectors encoded as raw half-float bits (`short[]`):
+
+```java
+byte[] int8Vectors = new byte[1536 * 1000];
+byte[] int8Queries = new byte[1536 * 2];
+
+short[] fp16Vectors = new short[1536 * 1000]; // raw half-float bits
+short[] fp16Queries = new short[1536 * 2];
+
+try (TurboVecIndex index = new TurboVecIndex(1536, 4)) {
+    index.add(int8Vectors, 1536);
+    TurboVecIndex.SearchResult int8Result = index.search(int8Queries, 10);
+
+    index.addFloat16(fp16Vectors, 1536);
+    TurboVecIndex.SearchResult fp16Result = index.searchFloat16(fp16Queries, 10);
+}
+```
+
 Load a persisted index:
 
 ```java
@@ -127,5 +146,6 @@ than the requested `k` when a mask restricts the eligible slot count.
   an app-side id table or extend the JNI layer to wrap turbovec's `IdMapIndex`.
 - `TurboVecIndex` owns native memory. Always call `close()` or use
   try-with-resources.
-- Input arrays are flat row-major `float[]` buffers. Vector dimensions must be a
-  positive multiple of 8, matching the Rust core requirements.
+- Input arrays are flat row-major `float[]`, signed int8 `byte[]`, or raw FP16
+  bit-pattern `short[]` buffers. Vector dimensions must be a positive multiple
+  of 8, matching the Rust core requirements.

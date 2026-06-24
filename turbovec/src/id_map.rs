@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::io;
-use crate::{AddError, ConstructError, TurboQuantIndex};
+use crate::{f16_bits_slice_to_f32, i8_slice_to_f32, AddError, ConstructError, TurboQuantIndex};
 
 /// ID-addressed wrapper around [`TurboQuantIndex`].
 pub struct IdMapIndex {
@@ -88,6 +88,31 @@ impl IdMapIndex {
              on the first add or construct with IdMapIndex::new(dim, bit_width)",
         );
         self.add_with_ids_2d(vectors, dim, ids)
+    }
+
+    /// Add signed 8-bit integer vectors with the given external ids.
+    ///
+    /// Requires the inner index's dim to already be set. Values are
+    /// interpreted as raw signed coordinates (`-128..=127`) and converted to
+    /// `f32` before indexing.
+    pub fn add_i8_with_ids(&mut self, vectors: &[i8], ids: &[u64]) -> Result<(), AddError> {
+        let dim = self.inner.dim_opt().expect(
+            "IdMapIndex dim is not set; use add_i8_with_ids_2d(vectors, dim, ids) \
+             on the first add or construct with IdMapIndex::new(dim, bit_width)",
+        );
+        self.add_i8_with_ids_2d(vectors, dim, ids)
+    }
+
+    /// Add IEEE-754 binary16 vectors with the given external ids.
+    ///
+    /// Requires the inner index's dim to already be set. Each `u16` is
+    /// interpreted as the raw half-float bit pattern.
+    pub fn add_f16_with_ids(&mut self, vectors: &[u16], ids: &[u64]) -> Result<(), AddError> {
+        let dim = self.inner.dim_opt().expect(
+            "IdMapIndex dim is not set; use add_f16_with_ids_2d(vectors, dim, ids) \
+             on the first add or construct with IdMapIndex::new(dim, bit_width)",
+        );
+        self.add_f16_with_ids_2d(vectors, dim, ids)
     }
 
     /// Add `vectors` of dimensionality `dim` with the given external ids.
@@ -154,6 +179,37 @@ impl IdMapIndex {
         Ok(())
     }
 
+    /// Add signed 8-bit integer vectors of dimensionality `dim` with the
+    /// given external ids.
+    ///
+    /// Values are interpreted as raw signed coordinates (`-128..=127`) and
+    /// converted to `f32` before indexing. Returns the same errors as
+    /// [`Self::add_with_ids_2d`].
+    pub fn add_i8_with_ids_2d(
+        &mut self,
+        vectors: &[i8],
+        dim: usize,
+        ids: &[u64],
+    ) -> Result<(), AddError> {
+        let converted = i8_slice_to_f32(vectors);
+        self.add_with_ids_2d(&converted, dim, ids)
+    }
+
+    /// Add IEEE-754 binary16 vectors of dimensionality `dim` with the given
+    /// external ids.
+    ///
+    /// Each `u16` is interpreted as the raw half-float bit pattern. Returns
+    /// the same errors as [`Self::add_with_ids_2d`].
+    pub fn add_f16_with_ids_2d(
+        &mut self,
+        vectors: &[u16],
+        dim: usize,
+        ids: &[u64],
+    ) -> Result<(), AddError> {
+        let converted = f16_bits_slice_to_f32(vectors);
+        self.add_with_ids_2d(&converted, dim, ids)
+    }
+
     /// Remove the vector with the given external id.
     ///
     /// Returns `true` if the id was present and removed, `false`
@@ -186,6 +242,21 @@ impl IdMapIndex {
     /// is `queries.len() / dim`.
     pub fn search(&self, queries: &[f32], k: usize) -> (Vec<f32>, Vec<u64>) {
         self.search_with_allowlist(queries, k, None)
+    }
+
+    /// Search with signed 8-bit integer query vectors.
+    ///
+    /// Values are interpreted as raw signed coordinates (`-128..=127`) and
+    /// converted to `f32` before search.
+    pub fn search_i8(&self, queries: &[i8], k: usize) -> (Vec<f32>, Vec<u64>) {
+        self.search_i8_with_allowlist(queries, k, None)
+    }
+
+    /// Search with IEEE-754 binary16 query vectors.
+    ///
+    /// Each `u16` is interpreted as the raw half-float bit pattern.
+    pub fn search_f16(&self, queries: &[u16], k: usize) -> (Vec<f32>, Vec<u64>) {
+        self.search_f16_with_allowlist(queries, k, None)
     }
 
     /// Search restricted to the given `allowlist` of external ids.
@@ -234,6 +305,30 @@ impl IdMapIndex {
             ids.push(id);
         }
         (res.scores, ids)
+    }
+
+    /// Search signed 8-bit integer query vectors restricted to an optional
+    /// external-id allowlist.
+    pub fn search_i8_with_allowlist(
+        &self,
+        queries: &[i8],
+        k: usize,
+        allowlist: Option<&[u64]>,
+    ) -> (Vec<f32>, Vec<u64>) {
+        let converted = i8_slice_to_f32(queries);
+        self.search_with_allowlist(&converted, k, allowlist)
+    }
+
+    /// Search IEEE-754 binary16 query vectors restricted to an optional
+    /// external-id allowlist.
+    pub fn search_f16_with_allowlist(
+        &self,
+        queries: &[u16],
+        k: usize,
+        allowlist: Option<&[u64]>,
+    ) -> (Vec<f32>, Vec<u64>) {
+        let converted = f16_bits_slice_to_f32(queries);
+        self.search_with_allowlist(&converted, k, allowlist)
     }
 
     /// True if the index currently contains a vector with this id.

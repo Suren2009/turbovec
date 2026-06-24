@@ -18,6 +18,7 @@ turbovec is a Rust vector index with Python bindings, built on Google Research's
 - **Online ingest.** Add vectors, they're indexed — no train step, no parameter tuning, no rebuilds as the corpus grows.
 - **Faster than FAISS.** Hand-written NEON (ARM) and AVX-512BW (x86) kernels beat FAISS IndexPQFastScan by 12–20% on ARM and match-or-beat it on x86.
 - **Filter at search time.** Pass an id allowlist (or a slot bitmask) to `search()` and the kernel honours it directly. You always get up to `k` results from the allowed set — no over-fetching, no recall hit on selective filters.
+- **Flexible input buffers.** The Rust core and Android AAR accept float32, signed int8, and raw IEEE-754 float16 buffers at add/search time; storage stays in turbovec's compact 2–4 bit format.
 - **Pure local.** No managed service, no data leaving your machine or VPC. Pair with any open-source embedding model for a fully air-gapped RAG stack.
 
 Building RAG where privacy, memory, or latency matters? **You're in the right place.**
@@ -120,6 +121,25 @@ index.write("index.tvim").unwrap();
 let loaded = IdMapIndex::load("index.tvim").unwrap();
 ```
 
+### Rust input types
+
+The core index stores the same compressed format regardless of input type. In
+addition to `&[f32]`, Rust callers can pass signed int8 coordinates or raw
+IEEE-754 binary16 bit patterns:
+
+```rust
+let mut int8_index = TurboQuantIndex::new(1536, 4).unwrap();
+int8_index.add_i8(&int8_vectors);
+let int8_results = int8_index.search_i8(&int8_queries, 10);
+
+let mut fp16_index = TurboQuantIndex::new(1536, 4).unwrap();
+fp16_index.add_f16(&fp16_bits);          // &[u16], raw half-float bits
+let fp16_results = fp16_index.search_f16(&fp16_query_bits, 10);
+```
+
+`IdMapIndex` has matching `add_i8_with_ids`, `add_f16_with_ids`,
+`search_i8`, and `search_f16` helpers.
+
 ## Recall
 
 TurboQuant vs FAISS `IndexPQ` (LUT256, nbits=8) — the paper's Section 4.4 baseline. 100K vectors, k=64. FAISS PQ sub-quantizer counts sized to match TurboQuant's bit rate (m=d/4 at 2-bit, m=d/2 at 4-bit).
@@ -215,6 +235,19 @@ gradle :library:assembleRelease
 
 See [`turbovec-android/README.md`](turbovec-android/README.md) for Android SDK /
 NDK prerequisites, app integration, and Java usage examples.
+
+Android apps can ingest/search `float[]`, signed `byte[]` int8 vectors, or FP16
+buffers represented as raw half-float `short[]` values:
+
+```java
+try (TurboVecIndex index = new TurboVecIndex(1536, 4)) {
+    index.add(int8Vectors, 1536);              // byte[]
+    TurboVecIndex.SearchResult r1 = index.search(int8Queries, 10);
+
+    index.addFloat16(fp16VectorBits, 1536);    // short[] raw IEEE-754 half bits
+    TurboVecIndex.SearchResult r2 = index.searchFloat16(fp16QueryBits, 10);
+}
+```
 
 ## Running benchmarks
 

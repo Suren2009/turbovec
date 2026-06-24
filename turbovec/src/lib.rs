@@ -83,6 +83,50 @@ fn first_invalid_coord(values: &[f32], dim: usize) -> Option<(usize, usize, f32)
     None
 }
 
+pub(crate) fn i8_slice_to_f32(values: &[i8]) -> Vec<f32> {
+    values.iter().map(|&value| value as f32).collect()
+}
+
+pub(crate) fn f16_bits_slice_to_f32(values: &[u16]) -> Vec<f32> {
+    values.iter().map(|&bits| f16_bits_to_f32(bits)).collect()
+}
+
+/// Convert IEEE-754 binary16 bits into `f32`.
+///
+/// This accepts the raw 16-bit representation used by Java/Android `short[]`
+/// half-float buffers and by many model runtimes. NaN and infinity payloads are
+/// preserved enough for the regular input-validation path to reject them.
+pub fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits as u32) & 0x8000) << 16;
+    let exp = ((bits >> 10) & 0x1f) as i32;
+    let frac = (bits & 0x03ff) as u32;
+
+    let f32_bits = match exp {
+        0 => {
+            if frac == 0 {
+                sign
+            } else {
+                let mut mant = frac;
+                let mut exponent = -14i32;
+                while (mant & 0x0400) == 0 {
+                    mant <<= 1;
+                    exponent -= 1;
+                }
+                mant &= 0x03ff;
+                let exp32 = ((exponent + 127) as u32) << 23;
+                sign | exp32 | (mant << 13)
+            }
+        }
+        0x1f => sign | 0x7f80_0000 | (frac << 13),
+        _ => {
+            let exp32 = ((exp - 15 + 127) as u32) << 23;
+            sign | exp32 | (frac << 13)
+        }
+    };
+
+    f32::from_bits(f32_bits)
+}
+
 /// SIMD-blocked cache derived from `packed_codes`.
 ///
 /// Materialised lazily by [`TurboQuantIndex::search`] on first call
@@ -354,6 +398,48 @@ impl TurboQuantIndex {
         Ok(())
     }
 
+    /// Add a flat batch of signed 8-bit integer vectors.
+    ///
+    /// Values are interpreted as raw signed coordinates (`-128..=127`) and
+    /// converted to `f32` before the normal normalize/rotate/quantize pipeline.
+    /// Since TurboQuant normalizes each vector, a uniform dequantization scale
+    /// factor is not needed for direction-only embeddings.
+    ///
+    /// Shape and panic behavior match [`Self::add`].
+    pub fn add_i8(&mut self, vectors: &[i8]) {
+        let converted = i8_slice_to_f32(vectors);
+        self.add(&converted);
+    }
+
+    /// Add signed 8-bit integer vectors of dimension `dim`.
+    ///
+    /// Values are interpreted as raw signed coordinates (`-128..=127`) and
+    /// converted to `f32` before indexing. Returns the same errors as
+    /// [`Self::add_2d`].
+    pub fn add_i8_2d(&mut self, vectors: &[i8], dim: usize) -> Result<(), AddError> {
+        let converted = i8_slice_to_f32(vectors);
+        self.add_2d(&converted, dim)
+    }
+
+    /// Add a flat batch of IEEE-754 binary16 vectors.
+    ///
+    /// Each `u16` is interpreted as the raw half-float bit pattern. Shape and
+    /// panic behavior match [`Self::add`]; NaN and infinity half values are
+    /// rejected by the normal input-validation path after conversion.
+    pub fn add_f16(&mut self, vectors: &[u16]) {
+        let converted = f16_bits_slice_to_f32(vectors);
+        self.add(&converted);
+    }
+
+    /// Add IEEE-754 binary16 vectors of dimension `dim`.
+    ///
+    /// Each `u16` is interpreted as the raw half-float bit pattern. Returns the
+    /// same errors as [`Self::add_2d`].
+    pub fn add_f16_2d(&mut self, vectors: &[u16], dim: usize) -> Result<(), AddError> {
+        let converted = f16_bits_slice_to_f32(vectors);
+        self.add_2d(&converted, dim)
+    }
+
     /// Run a top-`k` search against the index.
     ///
     /// Takes `&self` and is safe to call concurrently from multiple
@@ -374,6 +460,43 @@ impl TurboQuantIndex {
     /// (e.g. the Python binding raises `ValueError`).
     pub fn search(&self, queries: &[f32], k: usize) -> SearchResults {
         self.search_with_mask(queries, k, None)
+    }
+
+    /// Search with signed 8-bit integer query vectors.
+    ///
+    /// Values are interpreted as raw signed coordinates (`-128..=127`) and
+    /// converted to `f32` before the normal query pipeline.
+    pub fn search_i8(&self, queries: &[i8], k: usize) -> SearchResults {
+        self.search_i8_with_mask(queries, k, None)
+    }
+
+    /// Search with signed 8-bit integer query vectors and an optional slot mask.
+    pub fn search_i8_with_mask(
+        &self,
+        queries: &[i8],
+        k: usize,
+        mask: Option<&[bool]>,
+    ) -> SearchResults {
+        let converted = i8_slice_to_f32(queries);
+        self.search_with_mask(&converted, k, mask)
+    }
+
+    /// Search with IEEE-754 binary16 query vectors.
+    ///
+    /// Each `u16` is interpreted as the raw half-float bit pattern.
+    pub fn search_f16(&self, queries: &[u16], k: usize) -> SearchResults {
+        self.search_f16_with_mask(queries, k, None)
+    }
+
+    /// Search with IEEE-754 binary16 query vectors and an optional slot mask.
+    pub fn search_f16_with_mask(
+        &self,
+        queries: &[u16],
+        k: usize,
+        mask: Option<&[bool]>,
+    ) -> SearchResults {
+        let converted = f16_bits_slice_to_f32(queries);
+        self.search_with_mask(&converted, k, mask)
     }
 
     /// Run a top-`k` search restricted to slots whose `mask` entry is `true`.
@@ -599,7 +722,10 @@ impl TurboQuantIndex {
                     packed_codes.is_empty(),
                     "from_parts: lazy index must have empty packed_codes",
                 );
-                assert!(scales.is_empty(), "from_parts: lazy index must have empty scales");
+                assert!(
+                    scales.is_empty(),
+                    "from_parts: lazy index must have empty scales"
+                );
                 assert!(
                     tqplus_shift.is_empty(),
                     "from_parts: lazy index must have empty tqplus_shift",
@@ -767,7 +893,7 @@ mod from_parts_tests {
             4,
             2,
             vec![0u8; 64],
-            vec![1.0f32; 5],  // n_vectors says 2; scales has 5
+            vec![1.0f32; 5], // n_vectors says 2; scales has 5
             Vec::new(),
             Vec::new(),
         );
@@ -782,8 +908,8 @@ mod from_parts_tests {
             2,
             vec![0u8; 64],
             vec![1.0f32; 2],
-            vec![0.0f32; 64],   // length 64
-            vec![1.0f32; 32],   // length 32 — mismatch
+            vec![0.0f32; 64], // length 64
+            vec![1.0f32; 32], // length 32 — mismatch
         );
     }
 
@@ -796,7 +922,7 @@ mod from_parts_tests {
             2,
             vec![0u8; 64],
             vec![1.0f32; 2],
-            vec![0.0f32; 48],   // length 48 != dim 64
+            vec![0.0f32; 48], // length 48 != dim 64
             vec![1.0f32; 48],
         );
     }
@@ -804,30 +930,16 @@ mod from_parts_tests {
     #[test]
     #[should_panic(expected = "lazy index must have n_vectors=0")]
     fn from_parts_panics_on_lazy_with_nonzero_n_vectors() {
-        let _ = TurboQuantIndex::from_parts(
-            None,
-            4,
-            5,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let _ =
+            TurboQuantIndex::from_parts(None, 4, 5, Vec::new(), Vec::new(), Vec::new(), Vec::new());
     }
 
     #[test]
     fn from_parts_accepts_lazy_uncommitted() {
         // Lazy + everything empty + n_vectors=0 is the canonical lazy
         // state the constructor must accept.
-        let idx = TurboQuantIndex::from_parts(
-            None,
-            4,
-            0,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let idx =
+            TurboQuantIndex::from_parts(None, 4, 0, Vec::new(), Vec::new(), Vec::new(), Vec::new());
         assert_eq!(idx.dim_opt(), None);
         assert_eq!(idx.len(), 0);
     }

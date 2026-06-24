@@ -1,6 +1,8 @@
 use std::panic::{self, AssertUnwindSafe};
 
-use jni::objects::{JBooleanArray, JClass, JFloatArray, JObject, JString, JValue};
+use jni::objects::{
+    JBooleanArray, JByteArray, JClass, JFloatArray, JObject, JShortArray, JString, JValue,
+};
 use jni::sys::{jint, jlong, jobject};
 use jni::JNIEnv;
 
@@ -62,6 +64,22 @@ fn read_float_array(env: &mut JNIEnv<'_>, array: &JFloatArray<'_>) -> Result<Vec
     env.get_float_array_region(array, 0, &mut values)
         .map_err(|e| e.to_string())?;
     Ok(values)
+}
+
+fn read_byte_array(env: &mut JNIEnv<'_>, array: &JByteArray<'_>) -> Result<Vec<i8>, String> {
+    let len = env.get_array_length(array).map_err(|e| e.to_string())? as usize;
+    let mut values = vec![0; len];
+    env.get_byte_array_region(array, 0, &mut values)
+        .map_err(|e| e.to_string())?;
+    Ok(values)
+}
+
+fn read_half_array(env: &mut JNIEnv<'_>, array: &JShortArray<'_>) -> Result<Vec<u16>, String> {
+    let len = env.get_array_length(array).map_err(|e| e.to_string())? as usize;
+    let mut values = vec![0; len];
+    env.get_short_array_region(array, 0, &mut values)
+        .map_err(|e| e.to_string())?;
+    Ok(values.into_iter().map(|value| value as u16).collect())
 }
 
 fn read_optional_mask(
@@ -208,6 +226,38 @@ pub extern "system" fn Java_com_turbovec_android_TurboVecIndex_nativeAdd(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_turbovec_android_TurboVecIndex_nativeAddInt8(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    vectors: JByteArray<'_>,
+    dim: jint,
+) {
+    guard_void(&mut env, ERR_ILLEGAL_ARGUMENT, |env| {
+        let dim = ensure_non_negative("dim", dim)?;
+        let vectors = read_byte_array(env, &vectors)?;
+        let index = unsafe { index_mut(handle)? };
+        index.add_i8_2d(&vectors, dim).map_err(|e| e.to_string())
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_turbovec_android_TurboVecIndex_nativeAddFloat16(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    vectors: JShortArray<'_>,
+    dim: jint,
+) {
+    guard_void(&mut env, ERR_ILLEGAL_ARGUMENT, |env| {
+        let dim = ensure_non_negative("dim", dim)?;
+        let vectors = read_half_array(env, &vectors)?;
+        let index = unsafe { index_mut(handle)? };
+        index.add_f16_2d(&vectors, dim).map_err(|e| e.to_string())
+    });
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_turbovec_android_TurboVecIndex_nativeSearch(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -226,6 +276,54 @@ pub extern "system" fn Java_com_turbovec_android_TurboVecIndex_nativeSearch(
             let index = unsafe { index_ref(handle)? };
             let mask = read_optional_mask(env, mask, index.len())?;
             let result = index.search_with_mask(&queries, k, mask.as_deref());
+            make_search_result(env, result)
+        },
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_turbovec_android_TurboVecIndex_nativeSearchInt8(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    queries: JByteArray<'_>,
+    k: jint,
+    mask: JObject<'_>,
+) -> jobject {
+    guard(
+        &mut env,
+        std::ptr::null_mut(),
+        ERR_ILLEGAL_ARGUMENT,
+        |env| {
+            let k = ensure_non_negative("k", k)?;
+            let queries = read_byte_array(env, &queries)?;
+            let index = unsafe { index_ref(handle)? };
+            let mask = read_optional_mask(env, mask, index.len())?;
+            let result = index.search_i8_with_mask(&queries, k, mask.as_deref());
+            make_search_result(env, result)
+        },
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_turbovec_android_TurboVecIndex_nativeSearchFloat16(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    queries: JShortArray<'_>,
+    k: jint,
+    mask: JObject<'_>,
+) -> jobject {
+    guard(
+        &mut env,
+        std::ptr::null_mut(),
+        ERR_ILLEGAL_ARGUMENT,
+        |env| {
+            let k = ensure_non_negative("k", k)?;
+            let queries = read_half_array(env, &queries)?;
+            let index = unsafe { index_ref(handle)? };
+            let mask = read_optional_mask(env, mask, index.len())?;
+            let result = index.search_f16_with_mask(&queries, k, mask.as_deref());
             make_search_result(env, result)
         },
     )
