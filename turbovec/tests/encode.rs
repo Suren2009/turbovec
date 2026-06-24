@@ -47,7 +47,7 @@ fn produces_expected_shape_for_bit_width_three() {
 
 #[test]
 fn produces_expected_shape() {
-    for &bit_width in &[2usize, 4] {
+    for &bit_width in &[2usize, 4, 8] {
         let dim = 128;
         let n = 17;
         let rotation = make_rotation_matrix(dim);

@@ -1278,6 +1278,244 @@ fn build_query_neon_lut_from_slice(
     QueryNeonLut { uint8_luts, scale, bias }
 }
 
+/// Per-query byte LUTs for 8-bit scoring (one 256-entry sub-table per dim).
+struct Query8BitLut {
+    uint8_luts: Vec<u8>, // dim * 256
+    scale: f32,
+    bias: f32,
+}
+
+/// Build byte-indexed LUTs for 8-bit TurboQuant scoring.
+fn build_query_8bit_lut(q_rot_row: &[f32], centroids: &[f32], dim: usize) -> Query8BitLut {
+    let mut uint8_luts = vec![0u8; dim * 256];
+    let mut float_vals = vec![0.0f32; dim * 256];
+    let mut mins = vec![0.0f32; dim];
+    let mut max_span = 0.0f32;
+    let mut bias = 0.0f32;
+
+    for d in 0..dim {
+        let mut d_min = f32::MAX;
+        let mut d_max = f32::MIN;
+        for code in 0..256usize {
+            let s = q_rot_row[d] * centroids[code];
+            let j = d * 256 + code;
+            float_vals[j] = s;
+            if s < d_min {
+                d_min = s;
+            }
+            if s > d_max {
+                d_max = s;
+            }
+        }
+        mins[d] = d_min;
+        bias += d_min;
+        let span = d_max - d_min;
+        if span > max_span {
+            max_span = span;
+        }
+    }
+
+    let max_lut = 127.0;
+    let scale = if max_span > 1e-10 {
+        max_span / max_lut
+    } else {
+        1.0
+    };
+    let inv_scale = 1.0 / scale;
+
+    for d in 0..dim {
+        let d_min = mins[d];
+        for code in 0..256usize {
+            let j = d * 256 + code;
+            uint8_luts[j] =
+                ((float_vals[j] - d_min) * inv_scale).round().clamp(0.0, max_lut) as u8;
+        }
+    }
+
+    Query8BitLut {
+        uint8_luts,
+        scale,
+        bias,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_8bit_query_into_heap(
+    qlut_uint8: &[u8],
+    qlut_scale: f32,
+    qlut_bias: f32,
+    blocked_codes: &[u8],
+    vec_scales: &[f32],
+    dim: usize,
+    n_vectors: usize,
+    n_blocks: usize,
+    mask: Option<&[u64]>,
+    k: usize,
+    heap_s: &mut [f32],
+    heap_i: &mut [u32],
+    heap_sz: &mut usize,
+    heap_min: &mut f32,
+    heap_mi: &mut usize,
+) {
+    for b in 0..n_blocks {
+        let base_vec = b * BLOCK;
+        if !block_has_allowed(mask, base_vec) {
+            continue;
+        }
+        let block_offset = b * dim * BLOCK;
+        for lane in 0..BLOCK {
+            let vi = base_vec + lane;
+            if vi >= n_vectors {
+                break;
+            }
+            if let Some(m) = mask {
+                if !mask_allows(m, vi) {
+                    continue;
+                }
+            }
+            let mut score = qlut_bias;
+            for d in 0..dim {
+                let code = blocked_codes[block_offset + d * BLOCK + lane] as usize;
+                score += qlut_scale * qlut_uint8[d * 256 + code] as f32;
+            }
+            score *= vec_scales[vi];
+            if *heap_sz < k {
+                heap_s[*heap_sz] = score;
+                heap_i[*heap_sz] = vi as u32;
+                *heap_sz += 1;
+                if *heap_sz == k {
+                    *heap_min = heap_s[0];
+                    *heap_mi = 0;
+                    for h in 1..k {
+                        if heap_s[h] < *heap_min {
+                            *heap_min = heap_s[h];
+                            *heap_mi = h;
+                        }
+                    }
+                }
+            } else if score > *heap_min {
+                heap_s[*heap_mi] = score;
+                heap_i[*heap_mi] = vi as u32;
+                *heap_min = heap_s[0];
+                *heap_mi = 0;
+                for h in 1..k {
+                    if heap_s[h] < *heap_min {
+                        *heap_min = heap_s[h];
+                        *heap_mi = h;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 8-bit search: rotation + per-dim byte LUT build + scalar scoring + heap top-k.
+#[allow(clippy::too_many_arguments)]
+fn search_8bit(
+    queries: &[f32],
+    nq: usize,
+    rotation: &[f32],
+    blocked_codes: &[u8],
+    centroids: &[f32],
+    vec_scales: &[f32],
+    tqplus_shift: &[f32],
+    tqplus_scale: &[f32],
+    dim: usize,
+    n_vectors: usize,
+    n_blocks: usize,
+    k: usize,
+    mask: Option<&[u64]>,
+) -> (Vec<f32>, Vec<i64>) {
+    let n_allowed = match mask {
+        Some(m) => m.iter().map(|w| w.count_ones() as usize).sum::<usize>(),
+        None => n_vectors,
+    };
+    let k = k.min(n_allowed);
+    if k == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut q_rot = vec![0.0f32; nq * dim];
+    {
+        let q_ref = faer::mat::from_row_major_slice::<f32, _, _>(queries, nq, dim);
+        let r_ref = faer::mat::from_row_major_slice::<f32, _, _>(rotation, dim, dim);
+        let out_mut = faer::mat::from_row_major_slice_mut::<f32, _, _>(&mut q_rot, nq, dim);
+        faer::linalg::matmul::matmul(
+            out_mut,
+            q_ref,
+            r_ref.transpose(),
+            None,
+            1.0_f32,
+            faer::Parallelism::Rayon(0),
+        );
+    }
+
+    let (q_for_lut, bias_corrs) =
+        calibrate_queries(&q_rot, tqplus_shift, tqplus_scale, nq, dim);
+
+    let query_luts: Vec<Query8BitLut> = (0..nq)
+        .into_par_iter()
+        .map(|qi| {
+            let row = &q_for_lut[qi * dim..(qi + 1) * dim];
+            let mut lut = build_query_8bit_lut(row, centroids, dim);
+            lut.bias += bias_corrs[qi];
+            lut
+        })
+        .collect();
+
+    let results: Vec<(Vec<f32>, Vec<i64>)> = (0..nq)
+        .into_par_iter()
+        .map(|qi| {
+            let qlut = &query_luts[qi];
+            let mut heap_s = vec![f32::NEG_INFINITY; k];
+            let mut heap_i = vec![0u32; k];
+            let mut heap_sz = 0usize;
+            let mut heap_min = f32::NEG_INFINITY;
+            let mut heap_mi = 0usize;
+            score_8bit_query_into_heap(
+                &qlut.uint8_luts,
+                qlut.scale,
+                qlut.bias,
+                blocked_codes,
+                vec_scales,
+                dim,
+                n_vectors,
+                n_blocks,
+                mask,
+                k,
+                &mut heap_s,
+                &mut heap_i,
+                &mut heap_sz,
+                &mut heap_min,
+                &mut heap_mi,
+            );
+            let mut pairs: Vec<(f32, u32)> = heap_s[..heap_sz]
+                .iter()
+                .zip(heap_i[..heap_sz].iter())
+                .map(|(&s, &i)| (s, i))
+                .collect();
+            pairs.sort_unstable_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let s: Vec<f32> = pairs.iter().map(|p| p.0).collect();
+            let i: Vec<i64> = pairs.iter().map(|p| p.1 as i64).collect();
+            (s, i)
+        })
+        .collect();
+
+    let mut all_scores = Vec::with_capacity(nq * k);
+    let mut all_indices = Vec::with_capacity(nq * k);
+    for (s, i) in &results {
+        let pad = k.saturating_sub(s.len());
+        all_scores.extend_from_slice(s);
+        all_scores.extend(std::iter::repeat(f32::NEG_INFINITY).take(pad));
+        all_indices.extend_from_slice(i);
+        all_indices.extend(std::iter::repeat(0i64).take(pad));
+    }
+
+    (all_scores, all_indices)
+}
+
 /// Slot-allowlist bitmask: packed little-endian, bit `i` set iff slot `i` is
 /// allowed. Caller guarantees `len * 64 >= n_vectors`. Bits at index `>=
 /// n_vectors` are ignored.
@@ -1481,6 +1719,24 @@ pub fn search(
     k: usize,
     mask: Option<&[u64]>,
 ) -> (Vec<f32>, Vec<i64>) {
+    if bits == 8 {
+        return search_8bit(
+            queries,
+            nq,
+            rotation,
+            blocked_codes,
+            centroids,
+            vec_scales,
+            tqplus_shift,
+            tqplus_scale,
+            dim,
+            n_vectors,
+            n_blocks,
+            k,
+            mask,
+        );
+    }
+
     let n_allowed = match mask {
         Some(m) => m.iter().map(|w| w.count_ones() as usize).sum::<usize>(),
         None => n_vectors,

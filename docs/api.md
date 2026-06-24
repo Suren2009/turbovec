@@ -40,7 +40,7 @@ Before the first add, `idx.dim` is `None`, `len(idx)` is `0`, and `search()` ret
 
 | Method | Notes |
 |---|---|
-| `TurboQuantIndex(dim=None, bit_width=4)` | `bit_width ∈ {2, 4}`. `dim` is optional; when omitted it is inferred from the first `add` call. |
+| `TurboQuantIndex(dim=None, bit_width=4)` | `bit_width ∈ {2, 3, 4, 8}`. `dim` is optional; when omitted it is inferred from the first `add` call. |
 | `add(vectors)` | `vectors` is a contiguous float32 array of shape `(n, dim)`. On a lazy index the first call locks `dim`; subsequent calls must match. Raises `ValueError` on dim mismatch. |
 | `search(queries, k, *, mask=None)` | Returns `(scores, indices)`, both shape `(nq, effective_k)`. Indices are `int64` slot positions. `mask` is an optional `bool` array of length `len(idx)`; when given, only slots with `mask[i] == True` contribute. `effective_k = min(k, mask.sum())`. |
 | `swap_remove(idx)` | O(1). Moves the last vector into `idx`; returns the previous position of that moved vector (so external refs can be updated if needed). |

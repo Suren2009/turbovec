@@ -100,6 +100,32 @@ fn self_query_returns_self_top1_4bit() {
 }
 
 #[test]
+fn self_query_returns_self_top1_8bit() {
+    let dim = 512;
+    let bits = 8;
+
+    for &n in TAIL_SIZES {
+        let data = gaussian_normalized(n, dim, 0x8B17_0000 ^ n as u64);
+        let mut idx = TurboQuantIndex::new(dim, bits).unwrap();
+        idx.add(&data);
+        assert_eq!(idx.len(), n);
+
+        let nq = n.min(8);
+        let q = &data[..nq * dim];
+        let res = idx.search(q, 1);
+
+        for qi in 0..nq {
+            let top = res.indices_for_query(qi)[0];
+            assert_eq!(
+                top, qi as i64,
+                "8-bit self-match failed: n={} qi={} got={}",
+                n, qi, top
+            );
+        }
+    }
+}
+
+#[test]
 fn self_query_returns_self_top3_2bit() {
     // 2-bit quantization is coarser — allow the self-match to live in
     // the top 3 rather than strictly top 1. dim=512 keeps off-diagonal

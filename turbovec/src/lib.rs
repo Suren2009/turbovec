@@ -1,6 +1,6 @@
 //! TurboQuant implementation for vector search.
 //!
-//! Compresses high-dimensional vectors to 2-4 bits per coordinate with
+//! Compresses high-dimensional vectors to 2–8 bits per coordinate with
 //! near-optimal distortion. Data-oblivious — no training required.
 //!
 //! ```no_run
@@ -52,6 +52,11 @@ use std::sync::OnceLock;
 const ROTATION_SEED: u64 = 42;
 const BLOCK: usize = 32;
 const FLUSH_EVERY: usize = 256;
+
+/// Supported TurboQuant storage bit widths.
+pub(crate) fn valid_bit_width(bit_width: usize) -> bool {
+    matches!(bit_width, 2 | 3 | 4 | 8)
+}
 
 /// Maximum permitted coordinate magnitude. Beyond this, f32 sum-of-
 /// squares in the norm computation can overflow to +Inf for any
@@ -197,10 +202,10 @@ impl TurboQuantIndex {
     /// must match.
     ///
     /// Returns [`ConstructError::BitWidthOutOfRange`] if `bit_width` is
-    /// not in `{2, 3, 4}` and [`ConstructError::DimNotPositiveMultipleOf8`]
+    /// not in `{2, 3, 4, 8}` and [`ConstructError::DimNotPositiveMultipleOf8`]
     /// if `dim == 0` or `dim % 8 != 0`.
     pub fn new(dim: usize, bit_width: usize) -> Result<Self, ConstructError> {
-        if !(2..=4).contains(&bit_width) {
+        if !valid_bit_width(bit_width) {
             return Err(ConstructError::BitWidthOutOfRange(bit_width));
         }
         if dim == 0 || dim % 8 != 0 {
@@ -227,9 +232,9 @@ impl TurboQuantIndex {
     /// (or [`Self::add`] if the caller wires dim in separately).
     ///
     /// Returns [`ConstructError::BitWidthOutOfRange`] if `bit_width` is
-    /// not in `{2, 3, 4}`.
+    /// not in `{2, 3, 4, 8}`.
     pub fn new_lazy(bit_width: usize) -> Result<Self, ConstructError> {
-        if !(2..=4).contains(&bit_width) {
+        if !valid_bit_width(bit_width) {
             return Err(ConstructError::BitWidthOutOfRange(bit_width));
         }
         Ok(Self {

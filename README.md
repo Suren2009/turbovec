@@ -18,7 +18,7 @@ turbovec is a Rust vector index with Python bindings, built on Google Research's
 - **Online ingest.** Add vectors, they're indexed — no train step, no parameter tuning, no rebuilds as the corpus grows.
 - **Faster than FAISS.** Hand-written NEON (ARM) and AVX-512BW (x86) kernels beat FAISS IndexPQFastScan by 12–20% on ARM and match-or-beat it on x86.
 - **Filter at search time.** Pass an id allowlist (or a slot bitmask) to `search()` and the kernel honours it directly. You always get up to `k` results from the allowed set — no over-fetching, no recall hit on selective filters.
-- **Flexible input buffers.** The Rust core and Android AAR accept float32, signed int8, and raw IEEE-754 float16 buffers at add/search time; storage stays in turbovec's compact 2–4 bit format.
+- **Flexible input buffers.** The Rust core and Android AAR accept float32, signed int8, and raw IEEE-754 float16 buffers at add/search time; storage stays in turbovec's compact 2–8 bit format.
 - **Pure local.** No managed service, no data leaving your machine or VPC. Pair with any open-source embedding model for a fully air-gapped RAG stack.
 
 Building RAG where privacy, memory, or latency matters? **You're in the right place.**
@@ -123,9 +123,18 @@ let loaded = IdMapIndex::load("index.tvim").unwrap();
 
 ### Rust input types
 
-The core index stores the same compressed format regardless of input type. In
-addition to `&[f32]`, Rust callers can pass signed int8 coordinates or raw
-IEEE-754 binary16 bit patterns:
+TurboQuant **storage** uses 2–8 bits per coordinate (set via `bit_width` at
+construction). **Coordinate value types** select the buffer layout at add/search
+time:
+
+| Value type | Rust buffer | Add / search API |
+|------------|-------------|------------------|
+| FP32 | `&[f32]` | `add` / `search` |
+| INT8 (8-bit signed) | `&[i8]` | `add_i8` / `search_i8` |
+| FP16 (16-bit half) | `&[u16]` raw half bits | `add_f16` / `search_f16` |
+
+INT8 and FP16 coordinates are converted to `f32` before quantization, so results
+match an equivalent FP32 index for the same values.
 
 ```rust
 let mut int8_index = TurboQuantIndex::new(1536, 4).unwrap();
@@ -230,22 +239,50 @@ It builds an AAR that packages the Rust JNI bridge as `libturbovec_jni.so` for
 ```bash
 cd turbovec-android
 rustup target add aarch64-linux-android
-gradle :library:assembleRelease
+./gradlew :library:assembleRelease
+cp library/build/outputs/aar/library-release.aar release/library-release.aar
 ```
 
 See [`turbovec-android/README.md`](turbovec-android/README.md) for Android SDK /
 NDK prerequisites, app integration, and Java usage examples.
 
-Android apps can ingest/search `float[]`, signed `byte[]` int8 vectors, or FP16
-buffers represented as raw half-float `short[]` values:
+### Coordinate value types (Android)
+
+**Storage quantization** is set at index construction (`bitWidth` = 2, 3, 4, or 8).
+**Coordinate value types** select the buffer layout at add/search time:
+
+| Value type | Java buffer | Add API | Search API |
+|------------|-------------|---------|------------|
+| FP32 | `float[]` | `add(vectors, dim)` | `search(queries, k)` |
+| INT8 (8-bit signed) | `byte[]` | `addInt8(vectors, dim)` | `searchInt8(queries, k)` |
+| FP16 (16-bit half) | `short[]` raw half bits | `addFp16(vectors, dim)` | `searchFp16(queries, k)` |
+
+Use `TurboVecIndex.ValueType` (`FP32`, `INT8`, `FP16`) in Java to identify the
+active coordinate format. INT8 and FP16 buffers are converted to float32 in
+native code before TurboQuant compression.
+
+The sample app in `turbovec-android/app/` defaults to **8-bit** storage and lets
+you switch to 2/3/4-bit or pick a **coordinate value type** (FP32, INT8, FP16).
+Build and run it on a connected `arm64-v8a` device:
+
+```bash
+cd turbovec-android
+./gradlew :library:assembleRelease
+cp library/build/outputs/aar/library-release.aar release/library-release.aar
+./gradlew :app:installDebug
+adb shell am start -n com.turbovec.android.sample/.MainActivity
+```
 
 ```java
-try (TurboVecIndex index = new TurboVecIndex(1536, 4)) {
-    index.add(int8Vectors, 1536);              // byte[]
-    TurboVecIndex.SearchResult r1 = index.search(int8Queries, 10);
+try (TurboVecIndex index = new TurboVecIndex(1536, 8)) {
+    index.add(fp32Vectors, 1536);
+    TurboVecIndex.SearchResult r0 = index.search(fp32Queries, 10);
 
-    index.addFloat16(fp16VectorBits, 1536);    // short[] raw IEEE-754 half bits
-    TurboVecIndex.SearchResult r2 = index.searchFloat16(fp16QueryBits, 10);
+    index.addInt8(int8Vectors, 1536);
+    TurboVecIndex.SearchResult r1 = index.searchInt8(int8Queries, 10);
+
+    index.addFp16(fp16VectorBits, 1536);
+    TurboVecIndex.SearchResult r2 = index.searchFp16(fp16QueryBits, 10);
 }
 ```
 

@@ -114,7 +114,7 @@ def test_load_rejects_nonexistent_file():
         IdMapIndex.load("/nonexistent/path/does-not-exist.tvim")
 
 
-@pytest.mark.parametrize("bad_bit_width", [0, 1, 5, 8])
+@pytest.mark.parametrize("bad_bit_width", [0, 1, 5, 9])
 def test_constructor_rejects_bad_bit_width(bad_bit_width):
     with pytest.raises(ValueError, match="bit_width"):
         IdMapIndex(dim=128, bit_width=bad_bit_width)

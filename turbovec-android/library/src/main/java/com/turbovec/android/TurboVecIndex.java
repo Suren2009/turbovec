@@ -8,10 +8,39 @@ import java.util.Arrays;
  *
  * <p>The AAR packages {@code libturbovec_jni.so} for {@code arm64-v8a}. Instances own a native
  * index handle and must be closed when no longer needed.</p>
+ *
+ * <p><b>Storage quantization</b> is configured at construction time via {@code bitWidth} (2, 3, 4,
+ * or 8). Vectors are compressed into turbovec's TurboQuant format regardless of how coordinates are
+ * supplied.</p>
+ *
+ * <p><b>Coordinate value types</b> select the buffer layout at add/search time:</p>
+ * <ul>
+ *   <li>{@link ValueType#FP32} — {@code float[]} IEEE-754 binary32 coordinates</li>
+ *   <li>{@link ValueType#INT8} — {@code byte[]} signed 8-bit integer coordinates (−128…127)</li>
+ *   <li>{@link ValueType#FP16} — {@code short[]} raw IEEE-754 binary16 (half-float) bit patterns</li>
+ * </ul>
+ *
+ * INT8 and FP16 buffers are converted to float32 in native code before quantization, so search
+ * results match an equivalent FP32 index for the same coordinate values.
  */
 public final class TurboVecIndex implements AutoCloseable {
     static {
         System.loadLibrary("turbovec_jni");
+    }
+
+    /**
+     * Supported coordinate buffer layouts for add/search.
+     *
+     * <p>These describe input value precision, not the index's TurboQuant storage bit width (see
+     * {@link #TurboVecIndex(int, int)} {@code bitWidth}).</p>
+     */
+    public enum ValueType {
+        /** 32-bit float coordinates ({@code float[]}). */
+        FP32,
+        /** Signed 8-bit integer coordinates ({@code byte[]}). */
+        INT8,
+        /** 16-bit half-float coordinates as raw bit patterns ({@code short[]}). */
+        FP16
     }
 
     private long handle;
@@ -20,7 +49,7 @@ public final class TurboVecIndex implements AutoCloseable {
      * Creates an index with a fixed dimensionality.
      *
      * @param dim vector dimensionality; must be positive and a multiple of 8
-     * @param bitWidth quantization bit width, one of 2, 3, or 4
+     * @param bitWidth quantization bit width, one of 2, 3, 4, or 8
      */
     public TurboVecIndex(int dim, int bitWidth) {
         if (dim <= 0 || dim % 8 != 0) {
@@ -74,6 +103,19 @@ public final class TurboVecIndex implements AutoCloseable {
      * Adds a flat row-major signed 8-bit integer vector batch.
      *
      * <p>Values are interpreted as raw signed coordinates in {@code [-128, 127]} and converted to
+     * float32 in native code before indexing. Equivalent to {@link #add(byte[], int)}.</p>
+     *
+     * @param vectors flat array of {@code n * dim} int8 values
+     * @param dim dimensionality for this batch; commits lazy indexes on first add
+     */
+    public synchronized void addInt8(byte[] vectors, int dim) {
+        add(vectors, dim);
+    }
+
+    /**
+     * Adds a flat row-major signed 8-bit integer vector batch.
+     *
+     * <p>Values are interpreted as raw signed coordinates in {@code [-128, 127]} and converted to
      * float32 in native code before indexing.</p>
      *
      * @param vectors flat array of {@code n * dim} int8 values
@@ -86,6 +128,19 @@ public final class TurboVecIndex implements AutoCloseable {
         }
         validateVectorBatchLength("vectors", vectors.length, dim);
         nativeAddInt8(handle, vectors, dim);
+    }
+
+    /**
+     * Adds a flat row-major IEEE-754 binary16 vector batch.
+     *
+     * <p>Each {@code short} is interpreted as raw half-float bits, for example values produced by
+     * {@code android.util.Half} helpers or model runtimes that expose FP16 buffers.</p>
+     *
+     * @param vectors flat array of {@code n * dim} float16 bit patterns
+     * @param dim dimensionality for this batch; commits lazy indexes on first add
+     */
+    public synchronized void addFp16(short[] vectors, int dim) {
+        addFloat16(vectors, dim);
     }
 
     /**
@@ -134,6 +189,20 @@ public final class TurboVecIndex implements AutoCloseable {
     }
 
     /**
+     * Searches signed 8-bit integer query vectors. Equivalent to {@link #search(byte[], int)}.
+     */
+    public synchronized SearchResult searchInt8(byte[] queries, int k) {
+        return searchInt8(queries, k, null);
+    }
+
+    /**
+     * Searches signed 8-bit integer query vectors with an optional slot mask.
+     */
+    public synchronized SearchResult searchInt8(byte[] queries, int k, boolean[] mask) {
+        return search(queries, k, mask);
+    }
+
+    /**
      * Searches signed 8-bit integer query vectors.
      */
     public synchronized SearchResult search(byte[] queries, int k) {
@@ -154,6 +223,21 @@ public final class TurboVecIndex implements AutoCloseable {
         validateQueryLength(queries.length);
         validateMask(mask);
         return nativeSearchInt8(handle, queries, k, mask);
+    }
+
+    /**
+     * Searches IEEE-754 binary16 query vectors. Equivalent to {@link #searchFloat16(short[], int)}.
+     */
+    public synchronized SearchResult searchFp16(short[] queries, int k) {
+        return searchFp16(queries, k, null);
+    }
+
+    /**
+     * Searches IEEE-754 binary16 query vectors with an optional slot mask. Equivalent to
+     * {@link #searchFloat16(short[], int, boolean[])}.
+     */
+    public synchronized SearchResult searchFp16(short[] queries, int k, boolean[] mask) {
+        return searchFloat16(queries, k, mask);
     }
 
     /**
@@ -269,8 +353,8 @@ public final class TurboVecIndex implements AutoCloseable {
     }
 
     private static void validateBitWidth(int bitWidth) {
-        if (bitWidth < 2 || bitWidth > 4) {
-            throw new IllegalArgumentException("bitWidth must be one of 2, 3, or 4");
+        if (bitWidth != 2 && bitWidth != 3 && bitWidth != 4 && bitWidth != 8) {
+            throw new IllegalArgumentException("bitWidth must be one of 2, 3, 4, or 8");
         }
     }
 
