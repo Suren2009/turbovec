@@ -1,0 +1,799 @@
+Turbovec Vector Search Conversation
+===================================
+
+User:
+What is this turbo vec. How does this vector search is working
+
+Assistant:
+"Turbo vec" here is turbovec: a local Rust/Python vector index built around
+Google's TurboQuant quantization idea.
+
+It is basically a compressed vector search engine:
+
+- You add dense embeddings, e.g. (n, 1536) float32 vectors.
+- It compresses each coordinate to only 2-4 bits.
+- It searches directly over the compressed representation using SIMD.
+- It exposes Python APIs like TurboQuantIndex, IdMapIndex, plus LangChain,
+  Haystack, and LlamaIndex integrations.
+
+How search works:
+
+1. Ingest / add vectors
+   - Each vector is normalized into a direction.
+   - The original length/norm is stored separately.
+   - The unit vector is multiplied by a deterministic random rotation matrix.
+   - Coordinates are quantized using Lloyd-Max buckets for the expected
+     rotated-coordinate distribution.
+   - The small integer codes are bit-packed.
+   - Full float embeddings are discarded.
+
+2. Index structure
+   - It is not an HNSW graph or tree.
+   - It is closer to a very fast compressed scan.
+   - The stored database is:
+     - packed quantized codes,
+     - per-vector scale values,
+     - optional TQ+ calibration arrays,
+     - optional external ID map.
+
+3. Query/search
+   - The query vector is rotated with the same matrix.
+   - For that query, turbovec builds lookup tables: "if a database coordinate
+     has quantized code X, its contribution to the dot product is Y."
+   - It scans compressed vectors in 32-vector SIMD blocks.
+   - Instead of decompressing each vector, it uses byte/nibble lookup tables to
+     accumulate approximate similarity scores.
+   - It maintains a top-k heap and returns the highest scoring vectors.
+
+4. Similarity score
+   - The raw score is an approximate inner product.
+   - If your embeddings are normalized, that behaves like cosine similarity.
+   - The integrations often map that into framework-specific relevance scores.
+
+5. Filtering
+   - With IdMapIndex.search(..., allowlist=...) or
+     TurboQuantIndex.search(..., mask=...), it builds a slot mask.
+   - Entire 32-vector blocks with no allowed entries are skipped before scoring.
+   - This means filtered search avoids wasted SIMD work rather than searching
+     everything then dropping results.
+
+6. IDs
+   - TurboQuantIndex returns positional slots: 0, 1, 2, ...
+   - Deletes use swap_remove, so slot positions can change.
+   - IdMapIndex wraps it with stable u64 IDs and translates search results back
+     to your external IDs.
+
+In short: turbovec compresses vectors aggressively, then does a highly
+optimized exhaustive search over compressed codes. It saves RAM, avoids a
+training/rebuild phase, and gets speed from quantization plus SIMD rather than
+from graph-based approximate nearest-neighbor routing.
+
+
+User:
+What is random rotaion matrix
+
+Assistant:
+A random rotation matrix is a matrix that rotates vectors in space while
+preserving their geometry.
+
+In turbovec, it is used like this:
+
+    rotated_vector = original_unit_vector @ rotation_matrix.T
+
+A rotation matrix has two important properties:
+
+1. It preserves length:
+
+    ||x|| = ||R x||
+
+2. It preserves angles / dot products:
+
+    x . y = (R x) . (R y)
+
+So rotating vectors does not change the real similarity between them. It only
+changes the coordinate system.
+
+Why turbovec uses it:
+
+- Embedding vectors can have unusual coordinate distributions.
+- After applying a random orthogonal rotation, the values across coordinates
+  become more predictable.
+- TurboQuant can then quantize each coordinate with a known codebook instead of
+  training a custom codebook on your data.
+- This makes compression possible without a separate training phase.
+
+Simple intuition:
+
+Imagine your vectors are arrows in 3D space. A random rotation matrix spins the
+whole space around. The arrows still point the same way relative to each other,
+but their X/Y/Z coordinate values are redistributed.
+
+In turbovec specifically, the matrix is:
+
+- random-looking,
+- orthogonal,
+- deterministic from a fixed seed,
+- shared by both indexed vectors and query vectors.
+
+So database vectors and query vectors are rotated in the same way before
+scoring.
+
+
+User:
+Can you show me in diagram about this with 3D vectors and rotation
+
+Assistant:
+Here is a simple conceptual diagram:
+
+    BEFORE ROTATION                         AFTER RANDOM ROTATION
+
+            z                                      z'
+            |                                      |
+            |        v2                            |      Rv2
+            |       /                              |     /
+            |      /                               |    /
+            |     /                                |   /
+            |    /                                 |  /
+            |   / v1                               | / Rv1
+            |  /                                  /
+            | /                                  /
+            |/________________ y        ->       |/________________ y'
+           /                                  /
+          /                                  /
+         / x                                / x'
+
+Think of this as rotating the whole coordinate system, not changing the
+relationship between vectors.
+
+If original vectors are:
+
+    v1 = [x1, y1, z1]
+    v2 = [x2, y2, z2]
+
+Then turbovec applies the same random rotation matrix R:
+
+    Rv1 = R x v1
+    Rv2 = R x v2
+
+The coordinates change:
+
+    v1  = [ 0.9,  0.1,  0.3]
+    Rv1 = [-0.2,  0.8,  0.5]
+
+But the similarity stays the same:
+
+    v1 . v2 = Rv1 . Rv2
+
+So visually:
+
+    Original space                 Rotated space
+
+    v1 /                            Rv1 \
+       \ angle between them             \ same angle
+        / v2                              \ Rv2
+
+The important idea:
+
+    Rotation changes coordinates.
+    Rotation does NOT change distances, lengths, angles, or similarity.
+
+turbovec rotates vectors so their coordinate values become more evenly/randomly
+distributed, which makes them easier to quantize into 2-bit or 4-bit compressed
+codes.
+
+
+User:
+Explain this point
+Coordinates are quantized using Lloyd-Max buckets for the expected
+rotated-coordinate distribution.
+
+Assistant:
+It means: after rotation, each coordinate value is converted from a float into a
+small integer code using carefully chosen buckets.
+
+Example with 4-bit quantization:
+
+    float coordinate  ->  bucket/code
+    -0.0372           ->  3
+     0.0041           ->  8
+     0.0519           ->  13
+
+Since 4 bits can represent 16 values:
+
+    0000 to 1111 = 0 to 15
+
+So every coordinate is stored as one of 16 codes instead of a 32-bit float.
+
+What are "buckets"?
+
+Suppose a rotated coordinate usually falls between -0.1 and 0.1.
+
+The codebook defines ranges:
+
+    bucket 0:  [-0.100, -0.070)
+    bucket 1:  [-0.070, -0.050)
+    bucket 2:  [-0.050, -0.035)
+    ...
+    bucket 15: [ 0.070,  0.100]
+
+If a coordinate is:
+
+    x = 0.052
+
+and 0.052 falls into bucket 13, turbovec stores only:
+
+    13
+
+Later during search, bucket 13 is treated as its representative value, called
+the centroid.
+
+What Lloyd-Max does:
+
+Lloyd-Max is an algorithm for choosing good bucket boundaries and
+representative values.
+
+It asks:
+
+    Given the expected distribution of coordinate values, where should we put
+    the bucket edges so the average reconstruction error is as small as
+    possible?
+
+The buckets are not equally spaced. More buckets are placed where values are
+common.
+
+For rotated high-dimensional unit vectors, most coordinate values are near
+zero. So Lloyd-Max creates tighter buckets near zero and wider buckets in the
+tails.
+
+Conceptually:
+
+    rare values                       common values                       rare values
+       -0.10          -0.04      -0.02  0  0.02      0.04           0.10
+         |-------------|----------|-|-|-|-|-|----------|-------------|
+           wider buckets          tighter buckets       wider buckets
+
+Why "expected rotated-coordinate distribution"?
+
+After random rotation, turbovec expects coordinates to follow a known
+mathematical distribution.
+
+So it does not need to learn buckets from your dataset.
+
+Instead of:
+
+    train codebook on your vectors
+
+it can do:
+
+    use the known distribution after random rotation
+    compute Lloyd-Max buckets from math
+
+That is why turbovec has no separate training step.
+
+Tiny example:
+
+    x = 0.0187
+
+Lloyd-Max buckets say:
+
+    bucket 9 range = [0.015, 0.023)
+    bucket 9 centroid = 0.019
+
+So turbovec stores:
+
+    code = 9
+
+During search, it approximates:
+
+    0.0187 ~= 0.019
+
+This loses a little precision, but saves a lot of memory.
+
+
+User:
+Nice explanation.
+Can you explain similarly for search side
+
+Assistant:
+On the search side, turbovec does the reverse idea, but very efficiently.
+
+It does not fully decompress every stored vector.
+
+Instead, it turns the query into lookup tables and scores compressed codes
+directly.
+
+1. You start with a query embedding:
+
+    query = [0.12, -0.03, 0.44, ...]
+
+2. Rotate the query the same way:
+
+    q_rot = R x query
+
+Now query and database vectors are in the same rotated coordinate system.
+
+Important:
+
+    query . vector = rotated_query . rotated_vector
+
+So similarity is preserved.
+
+3. Stored vectors are compressed codes.
+
+A stored vector is not kept like this anymore:
+
+    [0.0187, -0.0421, 0.0033, ...]
+
+It is stored like this:
+
+    [9, 2, 8, 11, 7, ...]
+
+Each number is a quantization bucket/code.
+
+Each code points to a centroid:
+
+    code 9 ~=  0.019
+    code 2 ~= -0.041
+    code 8 ~=  0.004
+
+So conceptually, search wants to estimate:
+
+    score = q_rot . reconstructed_vector
+
+or:
+
+    score =
+    q_rot[0] * centroid[code[0]] +
+    q_rot[1] * centroid[code[1]] +
+    q_rot[2] * centroid[code[2]] +
+    ...
+
+4. Build a lookup table for this query.
+
+Instead of multiplying for every coordinate of every stored vector, turbovec
+precomputes small lookup tables.
+
+For each query coordinate and possible code:
+
+    lookup[coordinate][code] = q_rot[coordinate] * centroid[code]
+
+Then scoring becomes mostly table lookups and additions:
+
+    score += lookup[coordinate][stored_code]
+
+instead of:
+
+    score += q_rot[coordinate] * reconstructed_float
+
+5. Scan compressed vectors fast.
+
+For each stored vector:
+
+    stored codes = [9, 2, 8, 11, ...]
+
+turbovec does:
+
+    score =
+    lookup[0][9] +
+    lookup[1][2] +
+    lookup[2][8] +
+    lookup[3][11] +
+    ...
+
+This approximates the similarity between the query and that vector.
+
+But it does this in SIMD blocks, usually 32 vectors at a time.
+
+6. Apply per-vector scale correction.
+
+During indexing, turbovec stored one scale value per vector.
+
+After the compressed score is accumulated, it applies:
+
+    final_score = approximate_score * vector_scale
+
+This corrects bias introduced by quantization and restores length information.
+
+7. Keep only top-k.
+
+turbovec does not need to store all scores.
+
+As it scans, it keeps a small heap:
+
+    current best 10 results
+
+Whenever a new vector scores better than the weakest current result, it
+replaces it.
+
+At the end:
+
+    top_k = highest scoring vectors
+
+Simple end-to-end picture:
+
+    Query
+      |
+      v
+    Normalize / rotate with same R
+      |
+      v
+    Build query lookup tables
+      |
+      v
+    Scan compressed database codes
+      |
+      v
+    For each vector:
+        lookup code contributions
+        add them
+        multiply by vector scale
+      |
+      v
+    Keep top-k scores
+      |
+      v
+    Return ids / indices
+
+Tiny example:
+
+Suppose we have a 3D quantized vector:
+
+    stored codes = [9, 2, 13]
+
+And query lookup tables say:
+
+    coord 0, code 9  ->  0.020
+    coord 1, code 2  ->  0.031
+    coord 2, code 13 ->  0.044
+
+Then:
+
+    approx_score = 0.020 + 0.031 + 0.044
+                 = 0.095
+
+Apply stored scale:
+
+    final_score = 0.095 * 1.08
+                = 0.1026
+
+That final score is compared against other vectors.
+
+So the key search-side idea is:
+
+    Do not reconstruct vectors.
+    Turn the query into lookup tables.
+    Score compressed codes directly.
+
+That is why turbovec can be memory-efficient and fast.
+
+
+User:
+So its completely based on the random rotation vector.
+
+Assistant:
+Not completely.
+
+The random rotation matrix is important, but it is only one part of the method.
+
+turbovec depends on several pieces working together:
+
+    1. Normalize vectors
+    2. Apply random rotation
+    3. Quantize rotated coordinates
+    4. Bit-pack the quantized codes
+    5. Rotate query the same way
+    6. Use lookup tables to score compressed codes
+    7. Apply per-vector scale correction
+    8. Keep top-k results
+
+The random rotation helps make coordinate values predictable, but it does not by
+itself do search.
+
+A better way to say it:
+
+    turbovec is based on rotation + quantization + compressed SIMD scanning.
+
+The rotation is used so turbovec can say:
+
+    After rotation, coordinate values should follow a known distribution.
+
+That known distribution lets it choose Lloyd-Max buckets without training on
+your data.
+
+But the actual search is based on:
+
+    query lookup tables + compressed vector codes + fast top-k scanning
+
+Also, the rotation is not random per query or per vector. It is:
+
+- generated once,
+- deterministic from a fixed seed,
+- reused for all database vectors,
+- reused for all queries.
+
+So if you add vector v and later search with query q, both are transformed by
+the same matrix:
+
+    v_rot = R x v
+    q_rot = R x q
+
+Because R preserves dot products:
+
+    v . q = v_rot . q_rot
+
+So the rotation changes the coordinate representation, not the actual
+similarity relationship.
+
+
+User:
+If my given vectors are unit vectors then
+
+Assistant:
+If your given vectors are already unit vectors, then the first normalization
+step is basically a no-op.
+
+Meaning:
+
+    ||v|| = 1
+
+So turbovec does not need to remove any meaningful length information.
+
+But the rest still happens:
+
+    unit vector
+      -> random rotation
+      -> quantization
+      -> bit packing
+      -> compressed search
+
+Important points:
+
+1. Similarity becomes cosine similarity.
+
+For unit vectors:
+
+    cosine_similarity(v, q) = v . q
+
+So turbovec's inner-product score is effectively cosine similarity.
+
+2. Rotation still preserves similarity.
+
+If both vectors are unit vectors:
+
+    v . q = (R v) . (R q)
+
+So rotating them does not change the true similarity.
+
+3. Quantization still introduces approximation.
+
+Even if vectors are unit length, turbovec still replaces float coordinates with
+bucket codes:
+
+    0.0187 -> code 9 -> centroid 0.019
+
+So the score is approximate, not exact.
+
+4. Per-vector scale still matters.
+
+Even though your original norm is 1, quantization can make the reconstructed
+vector slightly shorter or biased.
+
+So turbovec stores a correction roughly like:
+
+    scale = original_norm / quantized_self_similarity
+
+For unit vectors:
+
+    scale = 1 / quantized_self_similarity
+
+This helps correct the score after quantization.
+
+So with unit vectors, the pipeline becomes simpler conceptually:
+
+    No real length normalization needed.
+    Search score ~= cosine similarity.
+    Rotation still helps quantization.
+    Scale correction still helps fix quantization bias.
+
+
+User:
+If given vectors are unit vectors then what could helpful
+
+Assistant:
+If your input vectors are already unit vectors, turbovec is still helpful mainly
+for:
+
+1. Memory compression
+
+Float32 unit vectors are still large.
+
+Example for 1536 dimensions:
+
+    float32: 1536 x 4 bytes = 6144 bytes per vector
+
+With turbovec:
+
+    4-bit: 1536 x 0.5 bytes = 768 bytes per vector
+    2-bit: 1536 x 0.25 bytes = 384 bytes per vector
+
+So even unit vectors can be stored much smaller.
+
+2. Faster cache-friendly search
+
+Even though the vectors are normalized, searching raw float vectors still means
+reading many float values from memory.
+
+turbovec reads compressed codes instead:
+
+    float32 vector: 6144 bytes
+    4-bit vector:   768 bytes
+    2-bit vector:   384 bytes
+
+Less memory read usually means faster scanning, especially for large indexes.
+
+3. Cosine similarity directly
+
+For unit vectors:
+
+    cosine_similarity = dot_product
+
+So turbovec's score naturally matches the similarity you likely want.
+
+No need to separately normalize at query time if your queries are unit vectors
+too.
+
+4. No training phase
+
+Some vector compression/indexing methods need a training step.
+
+turbovec does not need:
+
+    train codebook
+    build graph
+    rebuild index
+
+You can add vectors directly.
+
+5. Filtered vector search
+
+If you often search only within a subset, like:
+
+    tenant_id = 123
+    document_type = invoice
+    created_at > last_week
+
+turbovec can search only allowed IDs using masks/allowlists. It can skip entire
+blocks that contain no allowed vectors.
+
+What becomes less important?
+
+The norm storage part becomes less useful because every vector has norm 1.
+
+But the quantization correction scale can still help because quantized
+reconstructed vectors may not have perfect length.
+
+So for unit vectors, turbovec's main value is:
+
+    compressed cosine search over many vectors, with fast scanning and optional
+    filtering
+
+
+User:
+How to get the vector scale ?
+
+Assistant:
+In turbovec, vector scale is computed automatically during add() and stored
+internally per vector.
+
+Formula:
+
+    vector_scale = ||v|| / <u_rot, x_hat_orig>
+
+Where:
+
+- v = original input vector
+- ||v|| = original vector norm
+- u_rot = normalized + rotated version of v
+- x_hat_orig = quantized reconstruction of that rotated vector
+- <u_rot, x_hat_orig> = dot product between original rotated unit vector and
+  its quantized approximation
+
+In code, it is basically:
+
+    inner = sum_d u_rot[d] * reconstructed_quantized_value[d]
+    scale = norm / max(inner, 1e-10)
+
+If your vectors are already unit vectors:
+
+    norm = 1
+
+So:
+
+    vector_scale = 1 / <u_rot, x_hat_orig>
+
+Why it exists:
+
+Quantization usually makes the reconstructed vector slightly shorter or biased.
+The scale corrects that during search:
+
+    final_score = compressed_score * vector_scale
+
+Can you get it from Python API?
+
+Currently, not directly through public Python APIs like:
+
+    TurboQuantIndex.search(...)
+    IdMapIndex.search(...)
+
+The scale is internal. It is stored in the index file and used by the search
+kernel, but not exposed as a public getter.
+
+Conceptually:
+
+    index.add(vectors)
+    # turbovec computes scales internally here
+    scores, ids = index.search(query, k=10)
+    # scales are applied internally here
+
+
+User:
+What does means QJL ?
+
+Assistant:
+In vector-search context, QJL usually means "Quantized Johnson-Lindenstrauss."
+
+It combines two ideas:
+
+    Johnson-Lindenstrauss random projection
+    +
+    quantization
+
+Johnson-Lindenstrauss idea:
+
+A high-dimensional vector can be randomly projected into a lower-dimensional
+space while approximately preserving distances / similarities.
+
+    original vector:      1536 dimensions
+    random projection:     128 dimensions
+
+The goal:
+
+    similar vectors stay similar
+    far vectors stay far
+
+Approximately.
+
+Quantized part:
+
+After projection, values are compressed into low-bit codes:
+
+    float values -> small integer codes
+
+For example:
+
+    0.0187 -> 9
+    -0.041 -> 2
+
+So QJL is about making vectors:
+
+    smaller + faster to compare
+
+Difference from turbovec rotation:
+
+turbovec's random rotation is related, but not exactly QJL.
+
+    turbovec:
+      random rotation, same dimension, then quantization
+
+    QJL:
+      random projection, often lower dimension, then quantization
+
+So:
+
+    Random rotation preserves geometry exactly before quantization.
+    QJL preserves geometry approximately because it projects/compresses.
+
+In short:
+
+    QJL = a technique for compressing vectors using random projection plus
+    quantization, while approximately preserving similarity.
