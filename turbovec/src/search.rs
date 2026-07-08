@@ -1409,6 +1409,226 @@ fn score_8bit_query_into_heap(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+unsafe fn score_8bit_block_neon(
+    blocked_codes: &[u8],
+    uint8_luts: &[u8],
+    block_offset: usize,
+    dim: usize,
+    scale: f32,
+    bias: f32,
+    vec_scales: &[f32],
+    base_vec: usize,
+    n_vectors: usize,
+    out: &mut [f32; BLOCK],
+) {
+    use std::arch::aarch64::*;
+
+    let v_scale = vdupq_n_f32(scale);
+    let n_batches = (dim + FLUSH_EVERY - 1) / FLUSH_EVERY;
+
+    // Float accumulators start at bias.
+    let mut fa = [vdupq_n_f32(bias); 8];
+
+    let codes_base = blocked_codes.as_ptr().add(block_offset);
+    let luts_base = uint8_luts.as_ptr();
+
+    // Helpful constants for the cascade mask
+    let mask_3f = vdupq_n_u8(0x3F);
+    let zero = vdupq_n_u8(0);
+    let one = vdupq_n_u8(1);
+    let two = vdupq_n_u8(2);
+    let three = vdupq_n_u8(3);
+
+    for batch in 0..n_batches {
+        let g_start = batch * FLUSH_EVERY;
+        let g_end = (g_start + FLUSH_EVERY).min(dim);
+
+        let mut accum = [vdupq_n_u16(0); 4];
+
+        for g in g_start..g_end {
+            let lp = luts_base.add(g * 256);
+            let cp = codes_base.add(g * BLOCK);
+
+            // Load 32 byte codes for the 32 vectors
+            let c0 = vld1q_u8(cp);
+            let c1 = vld1q_u8(cp.add(16));
+
+            // Load the 256-byte table (16 registers)
+            let tbl0 = vld1q_u8(lp);
+            let tbl1 = vld1q_u8(lp.add(16));
+            let tbl2 = vld1q_u8(lp.add(32));
+            let tbl3 = vld1q_u8(lp.add(48));
+
+            let tbl4 = vld1q_u8(lp.add(64));
+            let tbl5 = vld1q_u8(lp.add(80));
+            let tbl6 = vld1q_u8(lp.add(96));
+            let tbl7 = vld1q_u8(lp.add(112));
+
+            let tbl8 = vld1q_u8(lp.add(128));
+            let tbl9 = vld1q_u8(lp.add(144));
+            let tbl10 = vld1q_u8(lp.add(160));
+            let tbl11 = vld1q_u8(lp.add(176));
+
+            let tbl12 = vld1q_u8(lp.add(192));
+            let tbl13 = vld1q_u8(lp.add(208));
+            let tbl14 = vld1q_u8(lp.add(224));
+            let tbl15 = vld1q_u8(lp.add(240));
+
+            let table_a = uint8x16x4_t(tbl0, tbl1, tbl2, tbl3);
+            let table_b = uint8x16x4_t(tbl4, tbl5, tbl6, tbl7);
+            let table_c = uint8x16x4_t(tbl8, tbl9, tbl10, tbl11);
+            let table_d = uint8x16x4_t(tbl12, tbl13, tbl14, tbl15);
+
+            // Lookup for first 16 vectors (c0)
+            let block_c0 = vshrq_n_u8(c0, 6);
+            let idx_c0 = vandq_u8(c0, mask_3f);
+            let res0_c0 = vqtbl4q_u8(table_a, idx_c0);
+            let res1_c0 = vqtbl4q_u8(table_b, idx_c0);
+            let res2_c0 = vqtbl4q_u8(table_c, idx_c0);
+            let res3_c0 = vqtbl4q_u8(table_d, idx_c0);
+            let mask0_c0 = vceqq_u8(block_c0, zero);
+            let mask1_c0 = vceqq_u8(block_c0, one);
+            let mask2_c0 = vceqq_u8(block_c0, two);
+            let mask3_c0 = vceqq_u8(block_c0, three);
+            let s0 = vorrq_u8(
+                vorrq_u8(vandq_u8(res0_c0, mask0_c0), vandq_u8(res1_c0, mask1_c0)),
+                vorrq_u8(vandq_u8(res2_c0, mask2_c0), vandq_u8(res3_c0, mask3_c0)),
+            );
+
+            // Lookup for second 16 vectors (c1)
+            let block_c1 = vshrq_n_u8(c1, 6);
+            let idx_c1 = vandq_u8(c1, mask_3f);
+            let res0_c1 = vqtbl4q_u8(table_a, idx_c1);
+            let res1_c1 = vqtbl4q_u8(table_b, idx_c1);
+            let res2_c1 = vqtbl4q_u8(table_c, idx_c1);
+            let res3_c1 = vqtbl4q_u8(table_d, idx_c1);
+            let mask0_c1 = vceqq_u8(block_c1, zero);
+            let mask1_c1 = vceqq_u8(block_c1, one);
+            let mask2_c1 = vceqq_u8(block_c1, two);
+            let mask3_c1 = vceqq_u8(block_c1, three);
+            let s1 = vorrq_u8(
+                vorrq_u8(vandq_u8(res0_c1, mask0_c1), vandq_u8(res1_c1, mask1_c1)),
+                vorrq_u8(vandq_u8(res2_c1, mask2_c1), vandq_u8(res3_c1, mask3_c1)),
+            );
+
+            accum[0] = vaddw_u8(accum[0], vget_low_u8(s0));
+            accum[1] = vaddw_u8(accum[1], vget_high_u8(s0));
+            accum[2] = vaddw_u8(accum[2], vget_low_u8(s1));
+            accum[3] = vaddw_u8(accum[3], vget_high_u8(s1));
+        }
+
+        // Flush: uint16 -> float via NEON widening + FMA
+        for i in 0..4 {
+            let lo = vcvtq_f32_u32(vmovl_u16(vget_low_u16(accum[i])));
+            let hi = vcvtq_f32_u32(vmovl_u16(vget_high_u16(accum[i])));
+            fa[i * 2] = vfmaq_f32(fa[i * 2], v_scale, lo);
+            fa[i * 2 + 1] = vfmaq_f32(fa[i * 2 + 1], v_scale, hi);
+        }
+    }
+
+    // Write 32 scores to output buffer, applying vec_scales
+    let end = (base_vec + BLOCK).min(n_vectors);
+    let out_ptr = out.as_mut_ptr();
+    let vec_scales_ptr = vec_scales.as_ptr().add(base_vec);
+
+    if end - base_vec == BLOCK {
+        for i in 0..8 {
+            let n = vld1q_f32(vec_scales_ptr.add(i * 4));
+            vst1q_f32(out_ptr.add(i * 4), vmulq_f32(fa[i], n));
+        }
+    } else {
+        let mut float_accum = [0.0f32; BLOCK];
+        for i in 0..8 {
+            vst1q_f32(float_accum.as_mut_ptr().add(i * 4), fa[i]);
+        }
+        for lane in 0..BLOCK {
+            *out_ptr.add(lane) = if lane < end - base_vec {
+                float_accum[lane] * *vec_scales_ptr.add(lane)
+            } else {
+                f32::NEG_INFINITY
+            };
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn score_8bit_query_into_heap_neon(
+    qlut_uint8: &[u8],
+    qlut_scale: f32,
+    qlut_bias: f32,
+    blocked_codes: &[u8],
+    vec_scales: &[f32],
+    dim: usize,
+    n_vectors: usize,
+    n_blocks: usize,
+    mask: Option<&[u64]>,
+    k: usize,
+    heap_s: &mut [f32],
+    heap_i: &mut [u32],
+    heap_sz: &mut usize,
+    heap_min: &mut f32,
+    heap_mi: &mut usize,
+) {
+    for b in 0..n_blocks {
+        let base_vec = b * BLOCK;
+        if !block_has_allowed(mask, base_vec) {
+            continue;
+        }
+        let block_offset = b * dim * BLOCK;
+        let end = (base_vec + BLOCK).min(n_vectors);
+        let mut block_out = [0.0f32; BLOCK];
+        unsafe {
+            score_8bit_block_neon(
+                blocked_codes,
+                qlut_uint8,
+                block_offset,
+                dim,
+                qlut_scale,
+                qlut_bias,
+                vec_scales,
+                base_vec,
+                n_vectors,
+                &mut block_out,
+            );
+        }
+        for lane in 0..(end - base_vec) {
+            if let Some(m) = mask {
+                if !mask_allows(m, base_vec + lane) {
+                    continue;
+                }
+            }
+            let score = block_out[lane];
+            if *heap_sz < k {
+                heap_s[*heap_sz] = score;
+                heap_i[*heap_sz] = (base_vec + lane) as u32;
+                *heap_sz += 1;
+                if *heap_sz == k {
+                    *heap_min = heap_s[0];
+                    *heap_mi = 0;
+                    for h in 1..k {
+                        if heap_s[h] < *heap_min {
+                            *heap_min = heap_s[h];
+                            *heap_mi = h;
+                        }
+                    }
+                }
+            } else if score > *heap_min {
+                heap_s[*heap_mi] = score;
+                heap_i[*heap_mi] = (base_vec + lane) as u32;
+                *heap_min = heap_s[0];
+                *heap_mi = 0;
+                for h in 1..k {
+                    if heap_s[h] < *heap_min {
+                        *heap_min = heap_s[h];
+                        *heap_mi = h;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 8-bit search: rotation + per-dim byte LUT build + scalar scoring + heap top-k.
 #[allow(clippy::too_many_arguments)]
 fn search_8bit(
@@ -1472,23 +1692,48 @@ fn search_8bit(
             let mut heap_sz = 0usize;
             let mut heap_min = f32::NEG_INFINITY;
             let mut heap_mi = 0usize;
-            score_8bit_query_into_heap(
-                &qlut.uint8_luts,
-                qlut.scale,
-                qlut.bias,
-                blocked_codes,
-                vec_scales,
-                dim,
-                n_vectors,
-                n_blocks,
-                mask,
-                k,
-                &mut heap_s,
-                &mut heap_i,
-                &mut heap_sz,
-                &mut heap_min,
-                &mut heap_mi,
-            );
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                score_8bit_query_into_heap_neon(
+                    &qlut.uint8_luts,
+                    qlut.scale,
+                    qlut.bias,
+                    blocked_codes,
+                    vec_scales,
+                    dim,
+                    n_vectors,
+                    n_blocks,
+                    mask,
+                    k,
+                    &mut heap_s,
+                    &mut heap_i,
+                    &mut heap_sz,
+                    &mut heap_min,
+                    &mut heap_mi,
+                );
+            }
+
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                score_8bit_query_into_heap(
+                    &qlut.uint8_luts,
+                    qlut.scale,
+                    qlut.bias,
+                    blocked_codes,
+                    vec_scales,
+                    dim,
+                    n_vectors,
+                    n_blocks,
+                    mask,
+                    k,
+                    &mut heap_s,
+                    &mut heap_i,
+                    &mut heap_sz,
+                    &mut heap_min,
+                    &mut heap_mi,
+                );
+            }
             let mut pairs: Vec<(f32, u32)> = heap_s[..heap_sz]
                 .iter()
                 .zip(heap_i[..heap_sz].iter())

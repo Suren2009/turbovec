@@ -7,7 +7,7 @@ the core positional `TurboQuantIndex` operations for Android apps.
 ## What is packaged
 
 - Java API: `com.turbovec.android.TurboVecIndex`
-- Native library: `libturbovec_jni.so`
+- Native library: `libturbovec_jni.so` (optimized with ARM NEON SIMD table shuffle cascades for 2-, 3-, 4-, and 8-bit search)
 - ABI: `arm64-v8a` only
 - Minimum Android API: 23
 - **Storage quantization:** TurboQuant 2-, 3-, 4-, or **8-bit** per coordinate
@@ -110,7 +110,9 @@ android {
 
 **Storage quantization** (TurboQuant bit width) is set at construction. **8-bit**
 stores one byte per coordinate — higher recall than 2/4-bit at the cost of more
-memory (e.g. 1536 bytes per 1536-dim vector vs 384 bytes at 2-bit).
+memory (e.g. 1536 bytes per 1536-dim vector vs 384 bytes at 2-bit). On `arm64-v8a`
+(Android devices), 8-bit search scoring is fully accelerated via an ARM NEON SIMD
+in-register lookup cascade.
 
 ```java
 import com.turbovec.android.TurboVecIndex;
