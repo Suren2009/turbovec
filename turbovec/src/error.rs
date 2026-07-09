@@ -91,7 +91,7 @@ impl Error for AddError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstructError {
-    /// `bit_width` must be 2, 3, or 4.
+    /// `bit_width` must be 2, 3, 4, or 8.
     BitWidthOutOfRange(usize),
 
     /// `dim` must be a positive multiple of 8.
@@ -102,7 +102,7 @@ impl fmt::Display for ConstructError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BitWidthOutOfRange(bw) => {
-                write!(f, "bit_width must be 2, 3, or 4, got {bw}")
+                write!(f, "bit_width must be 2, 3, 4, or 8, got {bw}")
             }
             Self::DimNotPositiveMultipleOf8(dim) => {
                 write!(f, "dim must be a positive multiple of 8, got {dim}")

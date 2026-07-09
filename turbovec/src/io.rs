@@ -18,7 +18,7 @@
 //! and refused with a rebuild hint.
 //!
 //! Version 1 `.tv` files had no magic — the file started with a bare
-//! bit_width byte (2/3/4). Version 2+ prepends magic + version, which
+//! bit_width byte (2/3/4/8). Version 2+ prepends magic + version, which
 //! lets us detect either a current file or "looks like a v1 turbovec
 //! file" cleanly.
 

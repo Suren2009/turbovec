@@ -54,13 +54,36 @@ pub fn repack(
         }
     }
 
-    // Step 2: Pack into platform-specific layout
-    let blocked = pack_blocked(n_vectors, n_blocks, n_byte_groups, blocked_size, &codes_flat, &perm0);
+    // Step 2: Pack into platform-specific layout. 8-bit codes are full bytes
+    // (0–255); the x86 nibble-interleave path is only valid for 2/3/4-bit.
+    let blocked = if bits == 8 {
+        pack_blocked_sequential(n_vectors, n_blocks, n_byte_groups, blocked_size, &codes_flat)
+    } else {
+        pack_blocked_platform(n_vectors, n_blocks, n_byte_groups, blocked_size, &codes_flat, &perm0)
+    };
     (blocked, n_blocks)
 }
 
+fn pack_blocked_platform(
+    n: usize,
+    n_blocks: usize,
+    n_byte_groups: usize,
+    blocked_size: usize,
+    codes_flat: &[Vec<u8>],
+    perm0: &[usize; 16],
+) -> Vec<u8> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        pack_blocked_x86(n, n_blocks, n_byte_groups, blocked_size, codes_flat, perm0)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        pack_blocked_sequential(n, n_blocks, n_byte_groups, blocked_size, codes_flat)
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
-fn pack_blocked(
+fn pack_blocked_x86(
     n: usize,
     n_blocks: usize,
     n_byte_groups: usize,
@@ -87,14 +110,12 @@ fn pack_blocked(
     blocked
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn pack_blocked(
+fn pack_blocked_sequential(
     n: usize,
     n_blocks: usize,
     n_byte_groups: usize,
     blocked_size: usize,
     codes_flat: &[Vec<u8>],
-    _perm0: &[usize; 16],
 ) -> Vec<u8> {
     // Sequential layout: each byte stored as-is, vectors in order.
     let mut blocked = vec![0u8; blocked_size];

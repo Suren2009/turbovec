@@ -59,6 +59,8 @@ val cargoBuildArm64 by tasks.registering(Exec::class) {
     inputs.dir(rootProject.layout.projectDirectory.dir("../turbovec"))
     outputs.file(nativeDir.file("target/$rustTarget/release/$rustLibraryName"))
 
+    outputs.upToDateWhen { false }
+
     doFirst {
         val properties = Properties()
         val localPropertiesFile = project.rootProject.file("local.properties")
@@ -96,6 +98,7 @@ val cargoBuildArm64 by tasks.registering(Exec::class) {
 
         environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
         environment("ANDROID_NDK_ROOT", ndkDir.absolutePath)
+        environment("CARGO_TARGET_DIR", nativeDir.file("target").asFile.absolutePath)
         environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", linker.absolutePath)
         environment("AR_aarch64_linux_android", archiver.absolutePath)
         environment("RUSTFLAGS", "-C link-arg=-Wl,-z,max-page-size=16384")
@@ -109,6 +112,8 @@ val syncRustJniLibs by tasks.registering(Copy::class) {
     dependsOn(cargoBuildArm64)
     from(nativeDir.file("target/$rustTarget/release/$rustLibraryName"))
     into(generatedJniLibsDir.resolve(rustAbi))
+
+    outputs.upToDateWhen { false }
 }
 
 tasks.named("preBuild") {

@@ -16,4 +16,3 @@ turbovec-android/**/build/
 evolve/
 evolve_rust/
 local.properties
-*.properties
